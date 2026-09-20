@@ -19,6 +19,10 @@ const TARGET = path.join(ROOT, "src-tauri", "target");
 // 所以判断依据是「bundle/nsis 是否存在」，而不是目录名。
 function findReleaseDir() {
   const roots = [];
+  // 宿主布局：没传 --target（例如 .cargo/config.toml 还不存在时的首编）
+  const host = path.join(TARGET, "release");
+  if (fs.existsSync(host)) roots.push(host);
+
   if (fs.existsSync(TARGET)) {
     for (const entry of fs.readdirSync(TARGET, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;

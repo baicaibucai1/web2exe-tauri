@@ -64,10 +64,18 @@ function findNsi() {
   const targetRoot = path.join(ROOT, "src-tauri", "target");
   if (!fs.existsSync(targetRoot)) return null;
 
-  // target/<triple>/release/nsis/<arch>/installer.nsi
-  // 不写死 triple 名：GNU 与 MSVC 的目录名不同，将来还可能加别的目标。
-  for (const triple of fs.readdirSync(targetRoot)) {
-    const nsisRoot = path.join(targetRoot, triple, "release", "nsis");
+  // 两种布局都要认：
+  //   target/<triple>/release/nsis/<arch>/installer.nsi  ← 显式指定了 target
+  //   target/release/nsis/<arch>/installer.nsi           ← 按宿主目标构建（没传 --target）
+  //
+  // 第二种是真实踩到的：模板首编时 .cargo/config.toml 还没生成，cargo 用宿主
+  // 目标构建，产物直接落在 target/release/ 下 —— 而本函数当时只认第一种，
+  // 于是"打包明明成功、校验却说没打过包"。
+  const roots = [
+    path.join(targetRoot, "release", "nsis"), // 宿主布局
+    ...fs.readdirSync(targetRoot).map((triple) => path.join(targetRoot, triple, "release", "nsis")),
+  ];
+  for (const nsisRoot of roots) {
     if (!fs.existsSync(nsisRoot)) continue;
     for (const arch of fs.readdirSync(nsisRoot)) {
       const c = path.join(nsisRoot, arch, "installer.nsi");
@@ -334,12 +342,11 @@ console.log("--- 3. 自动更新产物 ---");
 /** 在 bundle/ 下递归找安装包与签名（GNU 目标的路径含 triple，不能写死） */
 function findBundleProducts() {
   const targetRoot = path.join(ROOT, "src-tauri", "target");
-  let pkg = null;
-  let sig = null;
-  if (!fs.existsSync(targetRoot)) return { pkg, sig };
+  const found = [];
+  if (!fs.existsSync(targetRoot)) return { pkg: null, sig: null };
 
   const walk = (dir, depth = 0) => {
-    if (!fs.existsSync(dir) || depth > 4) return;
+    if (!fs.existsSync(dir) || depth > 5) return;
     for (const f of fs.readdirSync(dir)) {
       const p = path.join(dir, f);
       let st;
@@ -354,12 +361,26 @@ function findBundleProducts() {
       }
       if (!/\.(exe|sig)$/i.test(f)) continue;
       if (/webview2/i.test(f)) continue; // WebView2 引导程序是随包携带的，不是产物
-      if (/\.sig$/i.test(f)) sig = p;
-      else pkg = p;
+      // 只认 bundle/ 下的文件。
+      // 这条限定是必须的：主程序 <name>.exe 也在 target 里，
+      // 遍历顺序一换就会把它当成"安装包"报出来（实测踩过）。
+      if (!/[\\/]bundle[\\/]/i.test(p)) continue;
+      found.push(p.replace(/\\/g, "/"));
     }
   };
   walk(targetRoot);
-  return { pkg, sig };
+
+  // 优先 -*-setup.exe（NSIS 的命名），避免把别的 exe 当安装包
+  const pkg =
+    found.find((p) => /-setup\.exe$/i.test(p)) ??
+    found.find((p) => /\.exe$/i.test(p)) ??
+    null;
+  const sig = pkg ? found.find((p) => p === pkg + ".sig") ?? null : null;
+
+  return {
+    pkg: pkg ? pkg.replace(/\//g, path.sep) : null,
+    sig: sig ? sig.replace(/\//g, path.sep) : null,
+  };
 }
 
 const { pkg: nsisPkg, sig: sigFile } = findBundleProducts();
