@@ -68,15 +68,20 @@ npm install
 | `启动桌面版.bat` | 在真实 Tauri 窗口里跑一遍 | 首次编译 Rust 依赖 5–15 分钟 |
 | `打包桌面版.bat` | 产出安装包 + 更新签名 + update.json | 3–5 分钟（依赖已编好） |
 
-**首次打包前必须先生成一次签名密钥**（自动更新强制要求）：
+首次打包时脚本会问你一句「现在生成一对签名密钥吗」—— 答 Y 即可，
+它会生成 `.tauri-key`（私钥）并把 `.tauri-key.pub` 自动写进 `tauri.conf.json`。
+这一步不能省：Tauri 的自动更新强制签名，没有密钥就没有可更新的安装包。
+
+也可以手动做（想在多台机器间共享同一对密钥时）：
 
 ```bash
 node node_modules/@tauri-apps/cli/tauri.js signer generate -w .tauri-key
 # 会询问密码，直接回车用空密码 —— 打包脚本按空密码处理
 ```
 
-生成的两份文件里，`.tauri-key` 是私钥，**绝不能提交到仓库**（模板的 `.gitignore` 已经挡住了）；
-`.tauri-key.pub` 是公钥，内容要粘进 `tauri.conf.json` 的 `plugins.updater.pubkey`。
+`.tauri-key` 是私钥，**绝不能提交到仓库**（模板的 `.gitignore` 已经挡住了），
+请单独备份：丢了就再也没法给已经安装过的用户推送更新。
+详见 [docs/04](docs/04-自动更新-签名与-update.json.md)。
 
 ---
 

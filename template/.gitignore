@@ -6,6 +6,13 @@ target/
 # Tauri 生成（权限 schema、临时资源清单）
 src-tauri/gen/
 
+# 本机工具链配置 —— 由 scripts/setup-gnu.mjs 生成，内容是本机 MinGW 的绝对路径。
+# 提交它有两个坏处：暴露本机用户名与目录结构；别人 clone 之后 cargo 会去找
+# 一个不存在的路径，直接构建失败。
+# 打包脚本发现它不存在时会自己生成（见 docs/03 第 [2/5] 步）。
+src-tauri/.cargo/config.toml
+src-tauri/.cargo/config.toml.bak
+
 # 更新签名私钥 —— 绝对不要提交
 #
 # 注意：Tauri 的私钥文件名就叫 .tauri-key，没有 .key 后缀，

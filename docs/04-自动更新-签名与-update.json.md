@@ -15,6 +15,12 @@ GitHub Releases 都行）即可。
 
 ## 一次性准备
 
+> **这两步打包脚本会替你做完。** `pack.mjs` 在第 [2/5] 步发现没有 `.tauri-key` 时会
+> 问一句「现在生成一对吗」（默认生成、空密码），然后把 `.tauri-key.pub` 自动写进
+> `tauri.conf.json` 的 `plugins.updater.pubkey`。
+>
+> 下面写的是手工做法 —— 想在多台机器间共享同一对密钥、或者要自己控制密钥时用得上。
+
 ### 1. 生成密钥对
 
 ```bash

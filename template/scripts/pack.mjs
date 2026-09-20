@@ -35,6 +35,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const TSC = path.join(ROOT, 'node_modules', 'typescript', 'lib', 'tsc.js');
 const VITE = path.join(ROOT, 'node_modules', 'vite', 'bin', 'vite.js');
+const CLI = path.join(ROOT, 'node_modules', '@tauri-apps', 'cli', 'tauri.js');
 
 const line = (n = 52) => '  ' + '='.repeat(n);
 const say = (...a) => console.log(...a);
@@ -160,24 +161,97 @@ async function main() {
     }
   }
 
-  // 更新签名私钥：Tauri updater 是强制签名的，没有它就产不出可更新的包
-  if (!fs.existsSync(path.join(ROOT, '.tauri-key'))) {
-    die('缺少更新签名私钥 .tauri-key', [
-      '这个密钥用于给更新包签名（Tauri updater 强制要求）。第一次使用要先生成一对：',
-      '',
-      '  node node_modules/@tauri-apps/cli/tauri.js signer generate -w .tauri-key',
-      '',
-      '  会询问密码，直接回车用空密码即可 —— 打包脚本按空密码处理。',
-      '',
-      '生成后有两个文件：',
-      '  .tauri-key      私钥。绝不能提交到仓库，请单独备份。',
-      '                  丢了就再也无法给已安装的用户推送更新，只能让他们手动重装。',
-      '  .tauri-key.pub  公钥。把内容粘进 src-tauri/tauri.conf.json 的',
-      '                  plugins.updater.pubkey，否则应用验签会失败。',
-      '',
-      '若只想产出安装包、暂时不需要自动更新：把 tauri.conf.json 里的',
-      'bundle.createUpdaterArtifacts 改成 false 再打包。',
+  // ---- 更新签名：私钥 + 公钥，两样都要对 ----
+  //
+  // Tauri updater 是强制签名的，没有私钥就产不出可更新的包。
+  // 而且**公私钥必须是一对**：tauri.conf.json 里的 pubkey 如果还是模板占位符，
+  // 打包会在全部编译完成之后（这里是 42 分钟）才报
+  //   failed to decode pubkey: Invalid symbol 95, offset 7
+  // —— 那个 95 就是占位符 REPLACE_WITH_YOUR_TAURI_PUBKEY 里第 7 个字符的下划线。
+  // 所以这两件事都要在编译之前查完。
+  const keyPath = path.join(ROOT, '.tauri-key');
+  const pubPath = path.join(ROOT, '.tauri-key.pub');
+  const confPath = path.join(ROOT, 'src-tauri', 'tauri.conf.json');
+  const PUBKEY_PLACEHOLDER = 'REPLACE_WITH_YOUR_TAURI_PUBKEY';
+
+  let confText = fs.readFileSync(confPath, 'utf8');
+  const pubkeyInConf = (confText.match(/"pubkey"\s*:\s*"([^"]*)"/) ?? [, ''])[1];
+  const pubkeyIsPlaceholder =
+    pubkeyInConf === '' || pubkeyInConf === PUBKEY_PLACEHOLDER;
+
+  // (1) 私钥不存在
+  if (!fs.existsSync(keyPath)) {
+    if (!pubkeyIsPlaceholder) {
+      die('缺少更新签名私钥 .tauri-key，但 tauri.conf.json 里的公钥不是占位符', [
+        '这说明这对密钥曾经是配好的 —— 私钥不见了。',
+        '',
+        '先在备份里找一下 .tauri-key。',
+        '确实找不回来的话：私钥一旦丢失，就再也无法给**已经安装过的用户**推送更新，',
+        '只能让他们手动重装一次。要继续开发可以重新生成一对，',
+        `方法是先把 tauri.conf.json 里的 pubkey 改回 ${PUBKEY_PLACEHOLDER}，再重新打包。`,
+      ]);
+    }
+
+    if (!process.stdin.isTTY) {
+      die('缺少更新签名私钥 .tauri-key', [
+        '这个密钥用于给更新包签名（Tauri updater 强制要求）。第一次使用要先生成一对：',
+        '',
+        '  node node_modules/@tauri-apps/cli/tauri.js signer generate -w .tauri-key',
+        '',
+        '会询问密码，直接回车用空密码即可 —— 打包脚本按空密码处理。',
+        '',
+        '若只想产出安装包、暂时不需要自动更新：把 tauri.conf.json 里的',
+        'bundle.createUpdaterArtifacts 改成 false 再打包。',
+      ]);
+    }
+
+    // 全新项目（公钥还是占位符）→ 问一句就替他生成，省掉一次手工操作
+    const a = await ask('  还没有更新签名私钥，现在生成一对吗？(Y/n): ');
+    if (/^n(o)?$/i.test(a)) {
+      die('已跳过生成签名密钥', [
+        '没有私钥就产不出可更新的安装包。想手动生成：',
+        '',
+        '  node node_modules/@tauri-apps/cli/tauri.js signer generate -w .tauri-key',
+        '',
+        '（会询问密码，直接回车用空密码 —— 打包脚本按空密码处理）',
+      ]);
+    }
+
+    say('  正在生成签名密钥（空密码）...');
+    const gen = await run(process.execPath, [
+      CLI,
+      'signer',
+      'generate',
+      '-w', '.tauri-key',
+      '-p', '',
+      '--ci',
     ]);
+    if (gen.code !== 0 || !fs.existsSync(keyPath)) {
+      die('签名密钥生成失败。', ['上方是 tauri signer 的输出。']);
+    }
+    say('  [OK] 已生成 .tauri-key（私钥，务必单独备份）+ .tauri-key.pub（公钥）');
+  }
+
+  // (2) 公钥还是占位符 → 用本地公钥自动填上
+  //     只替换占位符/空串，不动使用者自己填过的值。
+  if (pubkeyIsPlaceholder) {
+    if (!fs.existsSync(pubPath)) {
+      die('tauri.conf.json 的 pubkey 还是占位符，且找不到 .tauri-key.pub', [
+        '公钥在生成密钥时打印过一次；若那份也没留下，只能重新生成一对',
+        '（此时已安装的旧版本将无法自动更新，需要手动重装）。',
+      ]);
+    }
+    const pub = fs.readFileSync(pubPath, 'utf8').trim();
+    if (!pub) die('.tauri-key.pub 是空文件。');
+
+    const next = confText.replace(/"pubkey"\s*:\s*"[^"]*"/, `"pubkey": ${JSON.stringify(pub)}`);
+    if (next === confText) {
+      die('没能在 tauri.conf.json 里找到 plugins.updater.pubkey 字段。');
+    }
+    fs.writeFileSync(confPath, next, 'utf8');
+    say('  [OK] 已把 .tauri-key.pub 写入 tauri.conf.json 的 plugins.updater.pubkey');
+  } else {
+    say('  签名密钥：[OK] 私钥与公钥均已配置');
   }
 
   // 版本号统一从 tauri.conf.json 读，避免多处维护导致不一致
@@ -230,6 +304,10 @@ async function main() {
       '',
       '若报错是下载超时（Connection Failed / os error 10060）：',
       '  NSIS 打包器首次使用需要下载，请配置网络代理后重试。',
+      '',
+      '若报错包含 "failed to decode pubkey"：',
+      '  tauri.conf.json 里 plugins.updater.pubkey 不是有效的公钥（多半还是占位符）。',
+      '  正常情况第 [2/5] 步已经自动填好了；手动改过的话，把它改回占位符再打一次。',
     ]);
   }
 

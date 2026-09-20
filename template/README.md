@@ -35,18 +35,24 @@ npm install
 `src/App.tsx` 是占位页，它存在的意义是"打包后能一眼看出前端跑起来了"，
 而不是白屏让人以为打包坏了。可以放心删。
 
-## 第一次打包前必须先做一次
+## 签名密钥：交给打包脚本
+
+第一次双击 `打包桌面版.bat` 时它会问一句「现在生成一对签名密钥吗」，答 Y 就行：
+它会生成 `.tauri-key`（私钥）与 `.tauri-key.pub`（公钥），
+并**自动把公钥写进** `tauri.conf.json` 的 `plugins.updater.pubkey`。
+
+公私钥必须成对。公钥还是模板占位符的话，打包会在**全部编译完成之后**
+（实测 42 分钟）才报 `failed to decode pubkey` —— 所以这件事必须在编译前查掉。
+
+想手动做（比如多台机器共享同一对密钥）：
 
 ```bash
 node node_modules/@tauri-apps/cli/tauri.js signer generate -w .tauri-key
 # 询问密码时直接回车（用空密码，打包脚本按空密码处理）
 ```
 
-然后把 `.tauri-key.pub` 的内容整段粘进 `tauri.conf.json` 的
-`plugins.updater.pubkey`。
-
 > **暂时不想要自动更新**？把 `tauri.conf.json` 里的
-> `bundle.createUpdaterArtifacts` 改成 `false`，就可以跳过这一步直接打包。
+> `bundle.createUpdaterArtifacts` 改成 `false`，就可以跳过密钥直接打包。
 
 `.tauri-key` 是私钥，**绝不能提交到仓库**（本目录的 `.gitignore` 已经挡住了）。
 它丢了就再也无法给已安装的用户推送更新。
