@@ -21,7 +21,7 @@ npm install
 ```
 
 `productName` 建议用 ASCII —— 中文名会让安装包文件名含中文，
-拼进更新 URL 时要额外编码（详见主仓库 docs/05 第 10 节）。
+拼进更新 URL 时要额外编码（详见本路线仓库的 `docs/05` 第 10 节）。
 
 **2. `src/`**
 
@@ -61,7 +61,7 @@ node node_modules/@tauri-apps/cli/tauri.js signer generate -w .tauri-key
 
 其余三个（`安装Rust环境.bat` 等）是环境安装引导，只在第一次需要。
 
-**这些 .bat 必须是纯 ASCII** —— 原因见主仓库 docs/05 第 1 节。
+**这些 .bat 必须是纯 ASCII** —— 原因见本路线仓库的 `docs/05` 第 1 节。
 所以窗口标题写在 .bat 里、中文提示由 `scripts/*.mjs` 打印。
 想改窗口标题就改 .bat 里的 `title Web2Exe - Dev` 那一行，**保持纯英文**。
 
@@ -83,9 +83,22 @@ node scripts/check-installer.mjs --verbose   # 3. 包里到底装了什么
 ```
 
 打包失败时先看第 1 条；觉得"装完应该有问题"看第 3 条。
-两个脚本都在主仓库 docs/03 的表格里有对应关系。
+两个脚本都在本路线仓库 `docs/03` 的表格里有对应关系。
+
+## 关于 src-tauri/.cargo/config.toml
+
+这个文件**不在仓库里**，因为它记录的是本机 MinGW 的绝对路径。
+`打包桌面版.bat` 发现它不存在时会自动跑 `setup-gnu.mjs` 生成，
+所以正常情况下你不用管它。
+
+它的作用是两件事：把编译目标钉死为 `x86_64-pc-windows-gnu`，
+以及加上 `-C link-arg=-Wl,-exclude-all-symbols`（绕开符号导出上限）。
+删掉它不会立刻报错，而是可能先白编译十几分钟 —— 详见 `docs/03` 第 2 步。
 
 ## 更详细的说明
 
-主仓库 `../README.md` 与 `../docs/` 下有五个文档：
+本路线仓库（也就是本目录的上一级）的 `README.md` 与 `docs/` 下有五个文档：
 选型理由、环境搭建、打包流程、自动更新、踩坑记录。遇到怪问题先翻最后一个。
+
+> 把 template 整个复制出去之后，这些文档就不在旁边了。建议一并复制 `docs/`，
+> 或者记住本仓库地址，出问题时回去查。

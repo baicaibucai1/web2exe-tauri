@@ -157,22 +157,35 @@ async function cmdDesktop() {
     await run(process.execPath, [path.join(__dirname, 'gen-icons.mjs')], { env });
   }
 
-  // 不配 GNU 又没 MSVC 链接器时提前给出可操作提示，而不是等编译报错
+  // 既没配 GNU、也没有 MSVC 链接器时，先自动探测一次 MinGW（setup-gnu 是幂等的），
+  // 补不上再给人话提示 —— 不要让人对着链接器的报错猜。
   if (toolchain === 'msvc') {
     const p = spawn('where', ['link'], { windowsHide: true });
     const code = await new Promise((r) => p.on('close', r));
     if (code !== 0) {
-      die([
-        '[缺少链接器]',
-        '',
-        '编译需要 C++ 链接器，当前既没有 MSVC 也没配置 GNU。两条路任选一条：',
-        '',
-        '  A. 装 GNU 工具链（推荐，约 100 MB）',
-        '     点「安装MinGW环境.bat」看步骤，装完运行 npm run setup:gnu',
-        '',
-        '  B. 装 MSVC C++ 生成工具（约 2-4 GB）',
-        '     点「安装C++生成工具.bat」，需要管理员权限',
-      ]);
+      say('');
+      say('  既没有 MSVC 链接器，也没生成 GNU 配置 —— 先探测一次 MinGW ...');
+      await run(process.execPath, [path.join(__dirname, 'setup-gnu.mjs')], { env });
+
+      const okGnu =
+        fs.existsSync(cargoCfg) &&
+        fs.readFileSync(cargoCfg, 'utf8').includes('x86_64-pc-windows-gnu');
+
+      if (okGnu) {
+        toolchain = 'gnu';
+      } else {
+        die([
+          '[缺少链接器]',
+          '',
+          '编译需要 C++ 链接器，当前既没有 MSVC 也没配置 GNU。两条路任选一条：',
+          '',
+          '  A. 装 GNU 工具链（推荐，约 100 MB）',
+          '     点「安装MinGW环境.bat」看步骤，装完运行 npm run setup:gnu',
+          '',
+          '  B. 装 MSVC C++ 生成工具（约 2-4 GB）',
+          '     点「安装C++生成工具.bat」，需要管理员权限',
+        ]);
+      }
     }
   }
 

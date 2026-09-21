@@ -124,6 +124,42 @@ async function main() {
     if (r.code !== 0) die('图标生成失败。');
   }
 
+  // GNU 工具链配置：src-tauri/.cargo/config.toml
+  //
+  // 这个文件由 setup-gnu.mjs 生成，内容是**本机 MinGW 的绝对路径**，
+  // 所以模板仓库里没有它（有了反而会把别人的路径带给你）。
+  // 但缺了它会同时坏掉两件事：
+  //   1. 编译目标退化成 rustup 的默认 toolchain。默认若是 msvc，
+  //      得先白编译十几分钟，才会在链接阶段报 could not open 'kernel32.lib'；
+  //   2. -Wl,-exclude-all-symbols 不生效，可能撞上 export ordinal too large。
+  // 与其让人等十几分钟再看不懂的报错，不如在这里补上。
+  //
+  // 想走 MSVC 路线（需要管理员权限）就设 WEB2EXE_NO_GNU=1 跳过这段。
+  const cargoCfg = path.join(ROOT, 'src-tauri', '.cargo', 'config.toml');
+  const hasGnuCfg =
+    fs.existsSync(cargoCfg) &&
+    fs.readFileSync(cargoCfg, 'utf8').includes('x86_64-pc-windows-gnu');
+
+  if (hasGnuCfg) {
+    say('  GNU 工具链配置：[OK] src-tauri\\.cargo\\config.toml');
+  } else if (process.env.WEB2EXE_NO_GNU) {
+    say('  [跳过] 未配置 GNU 工具链（WEB2EXE_NO_GNU=1，按 MSVC 路线处理）');
+  } else {
+    say('  未配置 GNU 工具链，正在生成 src-tauri\\.cargo\\config.toml ...');
+    const r = await run(process.execPath, [path.join(__dirname, 'setup-gnu.mjs')]);
+    if (r.code !== 0 || !fs.existsSync(cargoCfg)) {
+      die('GNU 工具链未就绪', [
+        '这一步需要 MinGW-w64 —— 不用 Visual Studio 就靠它。',
+        '',
+        '  1. 双击「安装MinGW环境.bat」，按提示下载 MSYS2 并安装 gcc',
+        '  2. 装完重新运行本脚本（也可以手动执行 node scripts/setup-gnu.mjs）',
+        '',
+        '若你本来就想走 MSVC 路线（需要管理员权限、约 2-4 GB），',
+        '请先装好 Visual Studio「使用 C++ 的桌面开发」，然后设 WEB2EXE_NO_GNU=1 再打包。',
+      ]);
+    }
+  }
+
   // 更新签名私钥：Tauri updater 是强制签名的，没有它就产不出可更新的包
   if (!fs.existsSync(path.join(ROOT, '.tauri-key'))) {
     die('缺少更新签名私钥 .tauri-key', [

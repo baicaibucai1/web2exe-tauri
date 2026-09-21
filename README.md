@@ -31,6 +31,22 @@ Windows 桌面应用与安装包的完整路线，附带可直接复制的模板
 
 ## 快速开始
 
+### 前置条件
+
+| 需要什么 | 怎么来 | 大小 |
+|---|---|---|
+| Windows 10 1803+ | 系统自带 WebView2，不用装 | — |
+| Node.js 18+ | 官网安装包，一路下一步 | ~30 MB |
+| Rust（GNU 工具链） | 双击 `安装Rust环境.bat`，它会问你要 GNU 还是 MSVC，**选 GNU** | ~400 MB |
+| MinGW-w64 | 双击 `安装MinGW环境.bat` 看步骤（下载 MSYS2 后 `pacman -S mingw-w64-x86_64-gcc`） | ~100 MB |
+
+全部装在用户目录，**不需要管理员权限**。装完不需要重开终端 —— 打包脚本会自己补 PATH。
+
+不装 Visual Studio 是这条路线的主要收益之一（省 2–4 GB 和一个管理员密码），
+代价见 [docs/02](docs/02-环境-不用管理员权限的GNU工具链.md)。
+
+### 三步
+
 ```bash
 # 1. 复制模板到你自己的项目目录
 cp -r template my-app && cd my-app
