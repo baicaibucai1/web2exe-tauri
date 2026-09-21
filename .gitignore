@@ -1,0 +1,27 @@
+# 仓库根 .gitignore
+# 模板目录里有自己的一份（template/.gitignore），这里是防呆兜底：
+# 万一在根目录跑了构建、或临时文件掉到根上，也不会被误提交。
+
+node_modules/
+dist/
+target/
+src-tauri/gen/
+*.log
+
+# 更新签名私钥（Tauri 生成的私钥没有后缀，光写 *.key 拦不住）
+.tauri-key
+.tauri-key.bak
+.tauri-key.pub
+*.key
+
+# 本机自检产物
+环境自检报告.txt
+probe-result.txt
+.setup-tmp/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+.DS_Store

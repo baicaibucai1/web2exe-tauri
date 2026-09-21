@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "默认权限集。Tauri 2 默认不给前端任何系统能力，用哪个就在这里放行哪个。",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "updater:default",
+    "process:default"
+  ]
+}

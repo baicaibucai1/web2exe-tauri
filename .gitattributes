@@ -1,0 +1,19 @@
+# 换行符策略（这个仓库是 Windows 向的，最容易踩的就是 .bat 的换行）
+#
+# cmd.exe 是按字节偏移解析批处理的：只要 .bat 里混进 LF-only 或混杂编码，
+# 后面的命令就会被错位截断，表现为"莫名其妙执行了半句命令"。
+# 所以 .bat / .cmd 强制 CRLF，并且在 .gitattributes 里钉死，
+# 避免在别的机器 clone（core.autocrlf=false）时被还原成 LF。
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制不要做任何转换
+*.dll binary
+*.exe binary
+*.png binary
+*.ico binary
+
+# 锁文件不参与逐行 diff（冲突时重新生成即可）
+package-lock.json -diff
+Cargo.lock -diff

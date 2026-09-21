@@ -1,0 +1,42 @@
+{
+  "name": "web2exe-app",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -b --pretty false",
+    "tauri": "tauri",
+    "icons": "node scripts/gen-icons.mjs",
+    "webview2:sync": "node scripts/sync-webview2-loader.mjs",
+    "webview2:check": "node scripts/sync-webview2-loader.mjs --check",
+    "bat:check": "node scripts/bat-lint.mjs",
+    "bat:fix": "node scripts/bat-lint.mjs --fix",
+    "env:check": "node scripts/env-check.mjs",
+    "setup:gnu": "node scripts/setup-gnu.mjs",
+    "setup:rust": "node scripts/setup-rust.mjs",
+    "setup:msys2": "node scripts/setup-msys2.mjs",
+    "setup:mingw": "node scripts/setup-mingw.mjs",
+    "build:desktop": "node scripts/build-desktop.mjs",
+    "build:status": "node scripts/build-status.mjs",
+    "installer:check": "node scripts/check-installer.mjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.9.0",
+    "@tauri-apps/plugin-process": "^2.3.0",
+    "@tauri-apps/plugin-updater": "^2.9.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.9.0",
+    "@types/node": "^24.9.1",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.1",
+    "@vitejs/plugin-react": "^5.0.4",
+    "typescript": "~5.9.3",
+    "vite": "^7.1.9"
+  }
+}

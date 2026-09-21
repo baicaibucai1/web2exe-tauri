@@ -1,0 +1,36 @@
+[package]
+# 这个 name 决定主程序的文件名（web2exe-app.exe），
+# 与界面上的 productName 是两回事 —— 后者在 tauri.conf.json 里。
+name = "web2exe-app"
+version = "0.1.0"
+description = "把 Web 应用打包成 Windows 桌面应用"
+edition = "2021"
+rust-version = "1.77.2"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 自动更新要用到这两样。放在 target 条件里是 Tauri 官方模板的写法：
+# 移动端不支持桌面更新机制，加上条件可以避免在移动端编译失败。
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+
+# ---------------------------------------------------------------------------
+# 体积优化
+#
+# 这四行把 release 产物从几十 MB 压到几 MB。它们不影响功能，只影响编译时间：
+# lto = true 会让链接阶段明显变慢，所以改代码时用 debug 构建（启动桌面版.bat），
+# 只有真正出包才走 release。
+# ---------------------------------------------------------------------------
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

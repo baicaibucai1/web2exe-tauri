@@ -1,0 +1,37 @@
+# 依赖与构建产物
+node_modules/
+dist/
+target/
+
+# Tauri 生成（权限 schema、临时资源清单）
+src-tauri/gen/
+
+# 更新签名私钥 —— 绝对不要提交
+#
+# 注意：Tauri 的私钥文件名就叫 .tauri-key，没有 .key 后缀，
+# 所以只写 *.key 是拦不住它的，必须单独列出来。
+.tauri-key
+.tauri-key.bak
+*.key
+
+# 公钥是跟私钥一起在本机生成的，属于本地产物；用户会用 `tauri signer generate`
+# 生成自己的一对，所以不提交（tauri.conf.json 里留的是占位符）。
+.tauri-key.pub
+
+# 本地构建日志与临时目录
+.setup-tmp/
+*.log
+
+# 环境自检脚本导出的报告（内容随机器而变，没有版本价值）
+环境自检报告.txt
+probe-result.txt
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+
+# 系统
+Thumbs.db
+Desktop.ini
+.DS_Store
