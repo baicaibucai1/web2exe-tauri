@@ -60,22 +60,54 @@ if (!fs.existsSync(BUNDLE_DIR)) {
 
 // NSIS 产物形如：<产品名>_0.1.0_x64-setup.exe，签名在同名 .sig 文件里
 const files = fs.readdirSync(BUNDLE_DIR);
-const installer = files.find((f) => f.endsWith("-setup.exe"));
 
-if (!installer) {
-  console.error(`在 ${BUNDLE_DIR} 里没找到 -setup.exe 安装包`);
-  console.error("现有文件：" + (files.join(", ") || "（空）"));
+// 必须按版本号挑：bundle 目录里留着历史版本的包，而 readdirSync 是字典序，
+// 「取第一个 -setup.exe」在第二次发版时会把 0.1.0 的包和它的 .sig 配到
+// 0.1.1 的清单上 —— 签名与文件自洽，客户端验签照样通过，结果是用户
+// 「更新」到了旧程序，且装完的版本号仍低于清单，之后每次都提示有更新。
+const setupFiles = files.filter((f) => f.endsWith("-setup.exe"));
+const matches = setupFiles.filter((f) => f.includes(`_${version}_`));
+
+if (matches.length === 0) {
+  console.error(`在 ${BUNDLE_DIR} 里没找到版本号 ${version} 的安装包`);
+  console.error("现有文件：" + (setupFiles.join(", ") || "（空）"));
   console.error("");
+  console.error("多半是版本号没对上：改的是 src-tauri/tauri.conf.json 的 version，");
+  console.error("却忘了重新打包，或打包用的还是旧版本。");
   console.error("若只想产出安装包而不需要签名，可先把 tauri.conf.json 的");
   console.error("bundle.createUpdaterArtifacts 设为 false 再重新构建。");
   process.exit(1);
 }
+if (matches.length > 1) {
+  console.error(`版本号 ${version} 在安装目录里匹配到 ${matches.length} 个安装包，无法判断该用哪个：`);
+  for (const f of matches) console.error("  " + f);
+  console.error("通常意味着改过 version 之后手工留了副本 —— 清掉多余的再重新打包。");
+  process.exit(1);
+}
+
+const installer = matches[0];
 
 const sigPath = path.join(BUNDLE_DIR, `${installer}.sig`);
 if (!fs.existsSync(sigPath)) {
   console.error(`缺少签名文件: ${installer}.sig`);
   console.error("签名用于让已安装的旧版本验证更新包来源，没有它 updater 会拒绝安装。");
   console.error("请确保设置了环境变量 TAURI_SIGNING_PRIVATE_KEY 后重新构建。");
+  console.error("（若这次是 --no-sign 打的包，就没有可更新的产物：去掉 WEB2EXE_NO_SIGN 重打。）");
+  process.exit(1);
+}
+
+// 同名的 .sig 完全可能是**上一次构建**留下的：先签名、后来某次 --no-sign 重建
+// 只覆盖了 exe，签名就与当前字节不对应了。客户端会验签失败，
+// 表现为"每个用户都更新不了"，而线上文件看起来一切正常。
+const installerPath = path.join(BUNDLE_DIR, installer);
+const sigM = fs.statSync(sigPath).mtimeMs;
+const pkgM = fs.statSync(installerPath).mtimeMs;
+if (sigM < pkgM) {
+  console.error("签名文件比安装包更早，二者不属于同一次构建：");
+  console.error(`  安装包  ${new Date(pkgM).toLocaleString("zh-CN")}`);
+  console.error(`  签名    ${new Date(sigM).toLocaleString("zh-CN")}`);
+  console.error("用这份清单发版，所有客户端都会验签失败。");
+  console.error("重新完整打一次带签名的包（不要带 WEB2EXE_NO_SIGN），让两者同时生成。");
   process.exit(1);
 }
 

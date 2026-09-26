@@ -33,6 +33,10 @@ src-tauri/.cargo/config.toml.bak
 环境自检报告.txt
 probe-result.txt
 
+# 每次发版由 gen-update-json.mjs 重新生成的清单：里面的 url 随发布地址而变，
+# 提交它等于把一次特定分发拓扑钉进仓库，还会与线上真实清单混淆
+update.json
+
 # 编辑器
 .vscode/
 .idea/
