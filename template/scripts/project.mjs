@@ -39,6 +39,13 @@ export const VERSION = conf.version || "0.0.0";
 /** 应用标识符，形如 com.example.myapp */
 export const IDENTIFIER = conf.identifier || "";
 
+/**
+ * 更新签名私钥的密码。空字符串 = 私钥不加密落盘，等同明文。
+ * 设 WEB2EXE_UPDATER_PASSWORD 就能加密；生成与签名两处都读同一个值，
+ * 所以不需要任何交互输入（cmd 里 set "VAR=" 会删掉变量，密码必须由 Node 传）。
+ */
+export const UPDATER_KEY_PASSWORD = process.env.WEB2EXE_UPDATER_PASSWORD ?? "";
+
 /** 前端产物目录（tauri.conf.json 的 build.frontendDist，相对 src-tauri/） */
 export const FRONTEND_DIST = path.resolve(
   ROOT,

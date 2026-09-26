@@ -19,9 +19,10 @@
  * 结论：**.bat 必须是纯 ASCII**，所有中文提示一律由 Node 打印
  * （Node 写的是 UTF-8 字节，配合 .bat 里那句 `chcp 65001` 就能正常显示）。
  *
- * 用法（通常由 打包桌面版.bat 调用）：
- *   node scripts/pack.mjs             # 完整流程
- *   node scripts/pack.mjs --no-pause  # 结束后不再等待按键
+ * 用法：
+ *   node scripts/pack.mjs
+ * 结束时不等待按键 —— 「打包桌面版.bat」自己带 pause，脚本本身不阻塞，
+ * 因此在 CI / 无终端环境下可以直接跑（交互式提问会走空回答并跳过）。
  */
 
 import { spawn } from 'node:child_process';
@@ -29,13 +30,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import { PRODUCT, ROOT } from './project.mjs';
+import { PRODUCT, ROOT, UPDATER_KEY_PASSWORD } from './project.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const TSC = path.join(ROOT, 'node_modules', 'typescript', 'lib', 'tsc.js');
 const VITE = path.join(ROOT, 'node_modules', 'vite', 'bin', 'vite.js');
 const CLI = path.join(ROOT, 'node_modules', '@tauri-apps', 'cli', 'tauri.js');
+
+// 只出安装包、不产更新签名：CI 用它（不留私钥在 runner 上），
+// "先不想管密钥"的人也可以手动加 --no-sign
+const NO_SIGN = process.argv.includes('--no-sign') || process.env.WEB2EXE_NO_SIGN === '1';
 
 const line = (n = 52) => '  ' + '='.repeat(n);
 const say = (...a) => console.log(...a);
@@ -180,7 +185,7 @@ async function main() {
     pubkeyInConf === '' || pubkeyInConf === PUBKEY_PLACEHOLDER;
 
   // (1) 私钥不存在
-  if (!fs.existsSync(keyPath)) {
+  if (!NO_SIGN && !fs.existsSync(keyPath)) {
     if (!pubkeyIsPlaceholder) {
       die('缺少更新签名私钥 .tauri-key，但 tauri.conf.json 里的公钥不是占位符', [
         '这说明这对密钥曾经是配好的 —— 私钥不见了。',
@@ -198,7 +203,9 @@ async function main() {
         '',
         '  node node_modules/@tauri-apps/cli/tauri.js signer generate -w .tauri-key',
         '',
-        '会询问密码，直接回车用空密码即可 —— 打包脚本按空密码处理。',
+        '会询问密码。直接回车是空密码 —— 私钥不加密、等同明文；',
+        '要加密就先设 WEB2EXE_UPDATER_PASSWORD，生成与每次打包用同一个值',
+        '（打包脚本会自动读它，不需要交互输入）。风险见 docs/04 的「私钥安全」。',
         '',
         '若只想产出安装包、暂时不需要自动更新：把 tauri.conf.json 里的',
         'bundle.createUpdaterArtifacts 改成 false 再打包。',
@@ -213,17 +220,25 @@ async function main() {
         '',
         '  node node_modules/@tauri-apps/cli/tauri.js signer generate -w .tauri-key',
         '',
-        '（会询问密码，直接回车用空密码 —— 打包脚本按空密码处理）',
+        '（会询问密码；想加密保存就设 WEB2EXE_UPDATER_PASSWORD 后重新打包，',
+        '  不设就是空密码 —— 私钥落盘等同明文，见 docs/04 的「私钥安全」）',
       ]);
     }
 
-    say('  正在生成签名密钥（空密码）...');
+    say('  正在生成签名密钥...');
+    const pw = UPDATER_KEY_PASSWORD;
+    if (!pw) {
+      say('  [!] 密码为空 —— 私钥落盘等同明文。任何能读到 .tauri-key 的人都能签出');
+      say('      一份会被所有已安装客户端自动装上的更新。');
+      say('      要加密保存：set WEB2EXE_UPDATER_PASSWORD=你的密码 后重新打包，');
+      say('      之后每次打包/签名保持同一个值即可（脚本会自动读，不需要交互输入）。');
+    }
     const gen = await run(process.execPath, [
       CLI,
       'signer',
       'generate',
       '-w', '.tauri-key',
-      '-p', '',
+      '-p', pw,
       '--ci',
     ]);
     if (gen.code !== 0 || !fs.existsSync(keyPath)) {
@@ -234,7 +249,10 @@ async function main() {
 
   // (2) 公钥还是占位符 → 用本地公钥自动填上
   //     只替换占位符/空串，不动使用者自己填过的值。
-  if (pubkeyIsPlaceholder) {
+  if (NO_SIGN) {
+    // 不签名时占位公钥不用管：createUpdaterArtifacts=false，产物里根本没有 .sig
+    say('  [跳过] 签名密钥与公钥回填（--no-sign）');
+  } else if (pubkeyIsPlaceholder) {
     if (!fs.existsSync(pubPath)) {
       die('tauri.conf.json 的 pubkey 还是占位符，且找不到 .tauri-key.pub', [
         '公钥在生成密钥时打印过一次；若那份也没留下，只能重新生成一对',
@@ -287,17 +305,20 @@ async function main() {
   // build-desktop.mjs 内部会：补 PATH、同步 WebView2Loader.dll、
   // 用正确的方式设置签名密码、并把 Tauri 的 beforeBuildCommand 置空
   // （前端刚在第 3 步构建过，不必再构建一遍）。
-  const build = await run(process.execPath, [path.join(__dirname, 'build-desktop.mjs')]);
+  const build = await run(process.execPath, [
+    path.join(__dirname, 'build-desktop.mjs'),
+    ...(NO_SIGN ? ['--no-sign'] : []),
+  ]);
   if (build.code !== 0) {
     die('打包失败', [
       '',
       '若报错包含 "export ordinal too large" / "too many exported symbols"：',
-      '  这是 GNU 工具链的符号溢出（MinGW 默认导出全部静态库符号，',
-      '  而 Windows PE 限制导出序号 <= 65535）。',
-      '  正常情况由 src-tauri\\.cargo\\config.toml 里的',
-      '    -C link-arg=-Wl,-exclude-all-symbols',
-      '  解决 —— GNU ld 2.4x 原生支持该参数，不需要额外安装 LLD。',
-      '  若仍报此错，说明配置丢了，重新运行  npm run setup:gnu',
+      '  这是 PE 导出表序号超过 65535 —— 只有产物里**真有导出表**时才会发生，',
+      '  也就是 cdylib/DLL 形态（或很老的 binutils + windows crate 组合）。',
+      '  本模板是 bin 型应用，产出的 exe 没有导出表，正常撞不到（docs/05 第 2 节）。',
+      '  先确认 src-tauri\\.cargo\\config.toml 还在（它写着 -Wl,-exclude-all-symbols）：',
+      '    npm run setup:gnu',
+      '  还在就去看 Cargo.toml 的 crate-type 是不是被改成了 ["cdylib", ...]。',
       '',
       '若报错包含 "could not open \'kernel32.lib\'"：',
       '  这是走了 MSVC 路线但缺少 Windows SDK，建议改用 GNU 路线。',
@@ -308,30 +329,40 @@ async function main() {
       '若报错包含 "failed to decode pubkey"：',
       '  tauri.conf.json 里 plugins.updater.pubkey 不是有效的公钥（多半还是占位符）。',
       '  正常情况第 [2/5] 步已经自动填好了；手动改过的话，把它改回占位符再打一次。',
+      '',
+      '若报错提到 password / decryption / could not decrypt：',
+      '  .tauri-key 是带密码生成的，而本次打包没给出同一个密码。',
+      '  设 WEB2EXE_UPDATER_PASSWORD=生成时的密码 再打包（别写进仓库或 CI 日志）。',
     ]);
   }
 
   /* ---------------- [5/5] 生成更新清单 ---------------- */
   step(5, TOTAL, '生成更新清单');
-  say('  请填入安装包的线上地址前缀');
-  say('  （应用会从这里下载更新，必须是 HTTPS）');
-  say('');
-  const baseUrl = await ask('  地址前缀: ');
 
-  if (!baseUrl) {
-    say('');
-    say('  未填地址，跳过生成 update.json。');
-    say('  稍后可以手动运行：');
-    say(`    node scripts/gen-update-json.mjs ${version} https://你的地址/目录`);
+  if (NO_SIGN) {
+    say('  [跳过] 本次没有 .sig 签名产物（--no-sign），因此不生成 update.json。');
+    say('  以后要上自动更新：生成私钥后去掉 WEB2EXE_NO_SIGN 重打一次。');
   } else {
-    const r = await run(process.execPath, [
-      path.join(__dirname, 'gen-update-json.mjs'),
-      version,
-      baseUrl,
-    ]);
-    if (r.code !== 0) {
+    say('  请填入安装包的线上地址前缀');
+    say('  （应用会从这里下载更新，必须是 HTTPS）');
+    say('');
+    const baseUrl = await ask('  地址前缀: ');
+
+    if (!baseUrl) {
       say('');
-      say('  [警告] update.json 生成失败，安装包本身已经打好了。');
+      say('  未填地址，跳过生成 update.json。');
+      say('  稍后可以手动运行：');
+      say(`    node scripts/gen-update-json.mjs ${version} https://你的地址/目录`);
+    } else {
+      const r = await run(process.execPath, [
+        path.join(__dirname, 'gen-update-json.mjs'),
+        version,
+        baseUrl,
+      ]);
+      if (r.code !== 0) {
+        say('');
+        say('  [警告] update.json 生成失败，安装包本身已经打好了。');
+      }
     }
   }
 

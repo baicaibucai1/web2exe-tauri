@@ -332,6 +332,34 @@ if (dllOnDisk) {
   info("WebView2Loader.dll", "构建目录里没有（MSVC 路线不需要），跳过这项检查");
 }
 
+// 「目标机器没有 WebView2 时安装包会补装」是 docs/01 里的断言，判据就在同一份 nsi 里。
+// 这一项专门抓"前面全绿但装上打不开"：webviewInstallMode 为空或 manualInstall 时，
+// 装到 LTSC / 离线 / 长期不更新的 Win10 上就是缺运行时，而上面的检查一项都不会红。
+const wv2Mode = def("INSTALLWEBVIEW2MODE") || "";
+const wv2BootstrapperPath = def("WEBVIEW2BOOTSTRAPPERPATH") || "";
+const wv2OfflinePath = def("WEBVIEW2INSTALLERPATH") || "";
+const wv2EmbeddedMissing =
+  (wv2Mode === "embedBootstrapper" && !wv2BootstrapperPath) ||
+  (wv2Mode === "offlineInstaller" && !wv2OfflinePath);
+
+if (!wv2Mode || wv2Mode === "manualInstall") {
+  check(
+    "缺 WebView2 的机器上有补装机制",
+    false,
+    `INSTALLWEBVIEW2MODE="${wv2Mode || "(空)"}" —— 没有运行时就打不开；` +
+      "在 tauri.conf.json 的 bundle.windows.webviewInstallMode 里选一个补装方式",
+  );
+} else {
+  check(
+    "缺 WebView2 的机器上有补装机制",
+    !wv2EmbeddedMissing,
+    wv2EmbeddedMissing
+      ? `${wv2Mode} 需要配套的引导程序/离线包路径，但 nsi 里是空的`
+      : `INSTALLWEBVIEW2MODE=${wv2Mode}` +
+          (wv2Mode === "downloadBootstrapper" ? "（该机器需联网，首次安装时下载）" : ""),
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /* 5. 更新产物                                                          */
 /* ------------------------------------------------------------------ */
@@ -387,11 +415,42 @@ const { pkg: nsisPkg, sig: sigFile } = findBundleProducts();
 const setupName = nsisPkg ? path.basename(nsisPkg) : null;
 
 check("NSIS 安装包已生成", !!nsisPkg, setupName || "未找到");
-check(
-  "安装包有配对的 .sig 签名（缺它就没法给已装用户推更新）",
-  !!sigFile,
-  sigFile ? path.basename(sigFile) : "未找到 —— 检查 TAURI_SIGNING_PRIVATE_KEY",
-);
+
+// 本次到底该不该有 .sig：以 build-desktop 传进来的构建模式为准。
+// 只看 tauri.conf.json 会拿错依据 —— --no-sign 是通过 --config 覆盖传给 CLI 的，
+// 配置文件里的 createUpdaterArtifacts 依然是 true。
+const NO_ARTIFACTS =
+  argv.includes("--no-update-artifacts") || conf?.bundle?.createUpdaterArtifacts === false;
+
+if (NO_ARTIFACTS) {
+  console.log("  ----  本次未启用更新签名产物（--no-sign），跳过 .sig 检查");
+  if (sigFile && nsisPkg && fs.statSync(sigFile).mtimeMs < fs.statSync(nsisPkg).mtimeMs) {
+    console.log(
+      `  ${"WARN"}  目录里留着一个比安装包**更早**的 ${path.basename(sigFile)} —— ` +
+        "它是上一次签名构建的残留，与当前字节不对应；" +
+        "gen-update-json 会拒绝使用它，但请别把它上传到线上目录。",
+    );
+  }
+} else {
+  check(
+    "安装包有配对的 .sig 签名（缺它就没法给已装用户推更新）",
+    !!sigFile,
+    sigFile ? path.basename(sigFile) : "未找到 —— 检查 TAURI_SIGNING_PRIVATE_KEY",
+  );
+  // 签名必须不早于安装包：签名是在这次产物落盘之后生成的，
+  // 一旦 mtime 反过来，就说明 .sig 属于上一次构建 —— 拿它发版会让所有客户端验签失败。
+  if (sigFile && nsisPkg) {
+    const sigM = fs.statSync(sigFile).mtimeMs;
+    const pkgM = fs.statSync(nsisPkg).mtimeMs;
+    check(
+      ".sig 不早于安装包（不是上一次的残留签名）",
+      sigM >= pkgM,
+      sigM >= pkgM
+        ? `间隔 ${((sigM - pkgM) / 1000).toFixed(1)} 秒`
+        : `签名比安装包旧 ${((pkgM - sigM) / 60000).toFixed(1)} 分钟 —— 重新签名后再发版`,
+    );
+  }
+}
 if (nsisPkg) {
   const bytes = fs.statSync(nsisPkg).size;
   info("安装包", `${(bytes / 1048576).toFixed(1)} MB  ${path.relative(ROOT, nsisPkg)}`);

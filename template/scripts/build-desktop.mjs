@@ -32,12 +32,15 @@
  *   node scripts/build-desktop.mjs                # 正常打包
  *   node scripts/build-desktop.mjs --quiet        # 只在出错时输出
  *   node scripts/build-desktop.mjs --no-frontend  # 跳过前端产物检查
+ *   node scripts/build-desktop.mjs --no-sign      # 不产更新签名，也不需要私钥
+ *                                                 # （CI 与"先只要一个安装包"的场景）
  */
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { UPDATER_KEY_PASSWORD } from './project.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -45,6 +48,8 @@ const ROOT = path.resolve(__dirname, '..');
 const argv = process.argv.slice(2);
 const QUIET = argv.includes('--quiet');
 const SKIP_FRONTEND = argv.includes('--no-frontend');
+// 不签名的两种触发方式：命令行参数，或 CI 里的环境变量
+const NO_SIGN = argv.includes('--no-sign') || process.env.WEB2EXE_NO_SIGN === '1';
 
 const CLI = path.join(ROOT, 'node_modules', '@tauri-apps', 'cli', 'tauri.js');
 const TSC = path.join(ROOT, 'node_modules', 'typescript', 'lib', 'tsc.js');
@@ -127,6 +132,9 @@ function distIsStale() {
   const distTime = fs.statSync(distIndex).mtimeMs;
   const skip = new Set(['node_modules', 'dist', 'target', '.git', '.setup-tmp']);
   let newest = 0;
+  const note = (t) => {
+    if (t > newest) newest = t;
+  };
 
   const walk = (dir) => {
     for (const name of fs.readdirSync(dir)) {
@@ -134,13 +142,31 @@ function distIsStale() {
       const p = path.join(dir, name);
       const st = fs.statSync(p);
       if (st.isDirectory()) walk(p);
-      else if (/\.(ts|tsx|css|html|json)$/.test(name)) newest = Math.max(newest, st.mtimeMs);
+      else if (/\.(ts|tsx|js|jsx|css|html|json)$/.test(name)) note(st.mtimeMs);
     }
   };
   for (const d of ['src', 'public']) {
     const p = path.join(ROOT, d);
     if (fs.existsSync(p)) walk(p);
   }
+
+  // 构建输入不只有 src/ —— 改 vite 配置、换 index.html、动 tauri.conf.json
+  // 都可能让产物变样，漏看就会把旧前端打进包里（原来只走 src/ 和 public/）。
+  // 注意这仍是 mtime 判定：复制目录或 git checkout 会重置时间戳，
+  // 那种情况下用 --no-frontend 之外的手段（手动删 dist/）强制重建。
+  for (const f of [
+    'index.html',
+    'vite.config.ts',
+    'tsconfig.json',
+    'tsconfig.node.json',
+    'package.json',
+    path.join('src-tauri', 'tauri.conf.json'),
+    path.join('src-tauri', 'capabilities', 'default.json'),
+  ]) {
+    const p = path.join(ROOT, f);
+    if (fs.existsSync(p)) note(fs.statSync(p).mtimeMs);
+  }
+
   return newest > distTime;
 }
 
@@ -152,19 +178,24 @@ async function main() {
   const logs = [];
 
   say('=== 前置检查 ===');
-  for (const [name, p, hint] of [
-    ['tauri CLI', CLI, '请先在项目根目录运行 npm install。'],
-    [
+  const preflight = [['tauri CLI', CLI, '请先在项目根目录运行 npm install。']];
+  if (!NO_SIGN) {
+    preflight.push([
       '签名私钥',
       SIGN_KEY,
       '这个密钥用于给更新包签名（Tauri updater 强制要求）。生成方法：' +
         'node node_modules/@tauri-apps/cli/tauri.js signer generate -w .tauri-key' +
-        '（会询问密码，直接回车用空密码）。详见 README 的「自动更新」一节。',
-    ],
-  ]) {
+        '（会询问密码；想让打包全程不交互，就设 WEB2EXE_UPDATER_PASSWORD 后重新打包，' +
+        '每次用同一个值）。详见 README 的「自动更新」一节。',
+    ]);
+  }
+  for (const [name, p, hint] of preflight) {
     const ok = fs.existsSync(p);
     say(`  ${ok ? '[OK]  ' : '[缺失]'} ${name}${ok ? '' : '  ' + p}`);
     if (!ok) fail(`${name} 缺失：${p}`, hint);
+  }
+  if (NO_SIGN) {
+    say('  [跳过] 签名私钥 —— --no-sign / WEB2EXE_NO_SIGN=1，本次不产更新签名');
   }
 
   // ---- PATH ----
@@ -179,10 +210,18 @@ async function main() {
   const env = {
     ...process.env,
     PATH: [toolchainPath, process.env.PATH].filter(Boolean).join(';'),
-    // 关键：必须是「存在的空字符串」，不能是「不存在」——
+    // 关键：密码必须是「存在的空字符串」或真实密码，不能是「不存在」——
     // cmd 的 `set "VAR="` 会删除变量，Tauri 就会转交互式索要密码并卡死。
+    //
+    // 私钥这里走 TAURI_SIGNING_PRIVATE_KEY（传的是**文件路径**）。
+    // 别改成 TAURI_SIGNING_PRIVATE_KEY_PATH：`tauri signer` 子命令确实有
+    // --private-key-path 这个**选项**（-f），帮助文本里也列了那个环境变量名，
+    // 但实测 @tauri-apps/cli 2.11.5 的 `tauri build` 不读它 ——
+    // 会在全部编译完成之后报
+    //   "A public key has been found, but no private key."（实测 123 秒后失败）。
+    // 而 TAURI_SIGNING_PRIVATE_KEY 虽然帮助文本写的是"私钥内容"，实际接受路径。
     TAURI_SIGNING_PRIVATE_KEY: SIGN_KEY,
-    TAURI_SIGNING_PRIVATE_KEY_PASSWORD: '',
+    TAURI_SIGNING_PRIVATE_KEY_PASSWORD: UPDATER_KEY_PASSWORD,
     CARGO_TERM_COLOR: 'never',
   };
 
@@ -191,7 +230,12 @@ async function main() {
   for (const d of toolchainPath.split(';').filter(Boolean)) {
     say(`    ${fs.existsSync(d) ? '[OK]  ' : '[缺失]'} ${d}`);
   }
-  say(`  签名私钥：${SIGN_KEY}  （密码为空字符串）`);
+  say(`  签名私钥：${SIGN_KEY}`);
+  say(
+    UPDATER_KEY_PASSWORD
+      ? '  私钥密码：取自 WEB2EXE_UPDATER_PASSWORD（非空，私钥是加密保存的）'
+      : '  私钥密码：空字符串 —— 私钥等同明文，详见 README 的「自动更新」一节',
+  );
 
   // ---- WebView2Loader.dll ----
   // GNU 工具链下 webview2-com-sys 动态链接它；
@@ -236,7 +280,13 @@ async function main() {
   }
 
   // ---- 打包 ----
-  const override = JSON.stringify({ build: { beforeBuildCommand: '' } });
+  // 不签名时必须显式关掉 createUpdaterArtifacts，
+  // 否则 tauri build 会走到签名一步、发现没有私钥才失败（报错还不指向原因）。
+  const override = JSON.stringify(
+    NO_SIGN
+      ? { build: { beforeBuildCommand: '' }, bundle: { createUpdaterArtifacts: false } }
+      : { build: { beforeBuildCommand: '' } },
+  );
 
   const started = Date.now();
   const build = await runStreamed(
@@ -274,7 +324,12 @@ async function main() {
   const verify = await runStreamed(
     '校验安装包内容',
     process.execPath,
-    [path.join(__dirname, 'check-installer.mjs')],
+    [
+      path.join(__dirname, 'check-installer.mjs'),
+      // 把本次的真实构建模式告诉它：tauri.conf.json 里createUpdaterArtifacts
+      // 还是 true（override 只作用于本次调用），不传过去它会拿错依据。
+      ...(NO_SIGN ? ['--no-update-artifacts'] : []),
+    ],
     env,
   );
   logs.push(verify.captured);
