@@ -59,7 +59,8 @@ const dim = (s) => `\x1b[2m${s}\x1b[0m`;
 function treeSize(dir) {
   let bytes = 0;
   let files = 0;
-  const walk = (d) => {
+  let newest = 0;
+  const walk = (d, depth = 0) => {
     let es;
     try {
       es = fs.readdirSync(d, { withFileTypes: true });
@@ -69,10 +70,12 @@ function treeSize(dir) {
     for (const e of es) {
       const fp = path.join(d, e.name);
       try {
-        if (e.isDirectory()) walk(fp);
+        if (e.isDirectory()) walk(fp, depth + 1);
         else {
-          bytes += fs.statSync(fp).size;
+          const st = fs.statSync(fp);
+          bytes += st.size;
           files++;
+          if (st.mtimeMs > newest) newest = st.mtimeMs;
         }
       } catch {
         /* 忽略占用中的文件 */
@@ -80,7 +83,7 @@ function treeSize(dir) {
     }
   };
   walk(dir);
-  return { bytes, files };
+  return { bytes, files, newest: newest || null };
 }
 
 console.log("");
@@ -95,20 +98,39 @@ if (!fs.existsSync(TARGET)) {
   process.exit(0);
 }
 
-const { bytes, files } = treeSize(TARGET);
+const { bytes, files, newest: newestWrite } = treeSize(TARGET);
 const depsCount = fs.existsSync(DEPS) ? fs.readdirSync(DEPS).length : 0;
 
 console.log(`编译中间产物：${(bytes / 1048576).toFixed(0)} MB${dim(`（${files} 个文件）`)}`);
 console.log(`已编译依赖数：${depsCount}`);
 console.log("");
 
-// 进度参考线：Tauri 应用完整编译大约产出 1.5-2.5 GB、700-900 个依赖
-if (bytes < 300 * 1048576) {
-  console.log(`${yellow("阶段")}  正在早期编译（依赖下载/编译中）`);
-} else if (bytes < 1200 * 1048576) {
-  console.log(`${yellow("阶段")}  正在编译依赖（这是最耗时的一段）`);
+/*
+ * 进度判据 —— 不用"到 X GB / Y 个依赖就算接近完成"这种阈值。
+ * 原来那组数（1.5-2.5 GB、700-900 个依赖）实测就已经被越过去：
+ * 2026-09-26 在同一台机器上测到 1857 MB / **1138** 个依赖，
+ * 依赖数随 Tauri 与 crate 版本漂移，写死阈值一定会变成错的进度条。
+ * 剩下两个不随版本漂的信号：产物目录有没有出现，以及最近还有没有在写文件。
+ */
+const RECENT_WINDOW_S = 60;
+const secondsAgo = newestWrite ? (Date.now() - newestWrite) / 1000 : null;
+const active = secondsAgo !== null && secondsAgo <= RECENT_WINDOW_S;
+
+if (fs.existsSync(BUNDLE)) {
+  console.log(`${yellow("阶段")}  依赖编译已完成，正在生成/已生成安装包（判据：bundle/nsis 已出现）`);
+} else if (!newestWrite) {
+  console.log(`${yellow("阶段")}  target 里还没有内容`);
+} else if (active) {
+  console.log(
+    `${yellow("阶段")}  正在编译 —— 最近一次写入在 ${secondsAgo.toFixed(0)} 秒前` +
+      dim(`（体积与依赖数只是参考，没有可靠的百分比进度）`),
+  );
 } else {
-  console.log(`${yellow("阶段")}  接近尾声（正在链接或打包）`);
+  console.log(
+    `${yellow("阶段")}  ${bytes > 0 ? "疑似停下" : "未开始"} —— ` +
+      `${(secondsAgo / 60).toFixed(1)} 分钟内没有任何文件被写入`,
+  );
+  console.log(dim("           可能是卡在下载（NSIS 首次要联网）或链接阶段；先看是否有 cargo/rustc 进程"));
 }
 
 console.log("");
