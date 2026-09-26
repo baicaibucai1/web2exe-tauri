@@ -8,10 +8,10 @@
 //   npm run setup:gnu -- --off 关闭 GNU 配置，恢复默认（MSVC）
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { locateMingw, REQUIRED_TOOLS, OPTIONAL_TOOLS } from "./mingw-locate.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -59,78 +59,36 @@ say(`${C.bold}配置 GNU 工具链${C.reset}`);
 say(`${C.dim}${"-".repeat(46)}${C.reset}`);
 say("");
 
-// MSYS2 常见的两个变体：mingw64（传统）与 ucrt64（较新，CRT 更接近 MSVC）
-const VARIANTS = ["mingw64", "ucrt64", "clang64"];
-const ROOTS = [
-  // 免安装解压版通常落在用户目录，优先检测
-  path.join(os.homedir(), "msys64"),
-  path.join(os.homedir(), "msys2"),
-  "C:/msys64",
-  "C:/msys2",
-  "D:/msys64",
-  "D:/msys2",
-  "C:/tools/msys64",
-  path.join(process.env.SYSTEMDRIVE ?? "C:", "/msys64"),
-];
-
-const requiredTools = ["gcc.exe", "ar.exe", "windres.exe", "dlltool.exe"];
-const optionalTools = ["nm.exe", "objcopy.exe"];
+// 候选位置与必需组件清单统一由 mingw-locate.mjs 提供 ——
+// 与 env-check.mjs、toolchain-path.mjs 同一份，避免三处漂移。
+const requiredTools = REQUIRED_TOOLS;
+const optionalTools = OPTIONAL_TOOLS;
 
 let found = null;
 
 say("正在查找 MinGW 安装位置…");
 
-for (const root of ROOTS) {
-  for (const variant of VARIANTS) {
-    const bin = path.join(root, variant, "bin");
-    const gcc = path.join(bin, "gcc.exe");
-    if (fs.existsSync(gcc)) {
-      // 确认必需工具齐全，缺一个都会在链接阶段失败
-      const missing = requiredTools.filter((t) => !fs.existsSync(path.join(bin, t)));
-      if (missing.length === 0) {
-        found = { bin, root, variant, gcc };
-        break;
-      }
-      say(
-        `  ${C.yellow}找到 ${bin}，但缺少 ${missing.join(", ")}，跳过${C.reset}`,
-      );
-    }
-  }
-  if (found) break;
-}
-
-// 回退：PATH 里如果有 gcc，也接受
-if (!found) {
-  try {
-    const out = execFileSync("where", ["gcc"], {
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 5000,
-      windowsHide: true,
-    })
-      .toString()
-      .trim()
-      .split(/\r?\n/)[0];
-    if (out && fs.existsSync(out)) {
-      const bin = path.dirname(out);
-      const missing = requiredTools.filter((t) => !fs.existsSync(path.join(bin, t)));
-      if (missing.length === 0) {
-        found = { bin, root: path.dirname(bin), variant: path.basename(bin), gcc: out };
-      }
-    }
-  } catch {
-    /* ignore */
-  }
+const located = locateMingw();
+if (located) {
+  found = { bin: located.bin, root: located.root, variant: located.variant, gcc: located.gcc };
 }
 
 if (!found) {
   say("");
-  say(`${C.red}未找到可用的 MinGW-w64。${C.reset}`);
+  say(`${C.red}未找到可用的 MinGW-w64（gcc/ar/windres/dlltool 需齐全）。${C.reset}`);
   say("");
-  say("请先安装 MSYS2：");
+  say("两条装法：");
+  say("");
+  say(`${C.bold}A. 免管理员（本路线）${C.reset} —— 解压到用户目录，不需要提权：`);
+  say("  npm run setup:msys2   # 下载 MSYS2 base 存档并解压到 %USERPROFILE%\\msys64");
+  say("  npm run setup:mingw   # 从镜像取 MinGW-w64 工具链组件");
+  say("  注意：这两个脚本绕开了 pacman 的包签名校验，下载内容不做完整性验证，");
+  say("        因此需要显式授权：设 WEB2EXE_ALLOW_UNVERIFIED_TOOLCHAIN=1 再运行。");
+  say("        能接受 pacman 的话，优先用 B 路线（它验包签名）。");
+  say("");
+  say(`${C.bold}B. 官方安装程序${C.reset} —— 需要管理员权限，但走 pacman 的签名校验：`);
   say(`  下载 https://mirrors.tuna.tsinghua.edu.cn/msys2/distrib/x86_64/`);
-  say("  选最新日期的 msys2-x86_64-<日期>.exe");
-  say("");
-  say("装完后打开「MSYS2 MINGW64」终端，执行：");
+  say("  选最新日期的 msys2-x86_64-<日期>.exe，装完在 MSYS2 MINGW64 终端里：");
   say(`  ${C.bold}pacman -S mingw-w64-x86_64-gcc${C.reset}`);
   say("");
   process.exitCode = 1;
@@ -181,17 +139,17 @@ say(
     `ld.lld.exe${hasLld ? "" : C.dim + "（可选）" + C.reset}`,
 );
 
-// 说明：符号溢出不再依赖 LLD。
-// 实测 GNU ld 2.4x 已原生支持 -Wl,-exclude-all-symbols，
-// 一个 rustflags 就够，省掉整个 LLVM（约 1 GB）。
-// 只有检测到 LLD 时才额外加 -fuse-ld=lld（链接更快，但非必需）。
+// 说明：LLD 不是必需项。
+// 实测（binutils 2.47 + Rust 1.98，2026-09-26）本模板这类 bin 型 Tauri 应用
+// 链接出的 exe 没有导出表，加不加 -exclude-all-symbols 都能链接成功；
+// 该参数只是给 cdylib/DLL 形态或更老工具链的保险，成本为零，所以留着。
 say("");
 if (hasLld) {
   say(`${C.dim}检测到 LLD，链接时会额外加上 -fuse-ld=lld（更快，非必需）。${C.reset}`);
 } else {
   say(`${C.dim}未检测到 LLD —— 不影响构建。${C.reset}`);
-  say(`${C.dim}符号溢出由下方 rustflags 里的 -Wl,-exclude-all-symbols 解决，${C.reset}`);
-  say(`${C.dim}GNU ld 原生支持该参数，无需安装约 1 GB 的 LLD。${C.reset}`);
+  say(`${C.dim}符号导出保险由下方 rustflags 里的 -Wl,-exclude-all-symbols 提供，${C.reset}`);
+  say(`${C.dim}GNU ld 原生认识这个参数，无需为此安装约 1 GB 的 LLD。${C.reset}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -214,10 +172,13 @@ const content = `# Cargo 配置：GNU 工具链（由 scripts/setup-gnu.mjs 生�
 # 生成于 ${new Date().toLocaleString("zh-CN")}
 # MinGW 位置：${found.bin}
 #
-# 关键参数 -Wl,-exclude-all-symbols：
-#   MinGW 构建 DLL 时默认导出全部静态库符号，而 Windows PE 限制导出序号 <= 65535。
-#   Tauri 依赖的 windows crate 远超此限，会报 export ordinal too large。
-#   此参数让链接器只导出显式标记的函数，Tauri 的 cdylib 只需少量 FFI 导出。
+# 两个段的作用不同，别混：
+#   [build] target —— 必需。缺了它 cargo 会用 rustup 的默认 toolchain；默认若是
+#     msvc，前面所有 crate 都编得过，直到最后链接才报 could not open 'kernel32.lib'。
+#   -Wl,-exclude-all-symbols —— 保险，不是本模板的必需项。它约束的是 PE 导出表
+#     （序号上限 65535），而 bin 型应用链接出来的 exe 根本没有导出表，
+#     实测去掉该参数一样能链接成功。会撞上限的是 cdylib/DLL 形态或较老的
+#     binutils + windows crate 组合，留着它成本为零。
 #
 # 关闭本配置：npm run setup:gnu -- --off
 

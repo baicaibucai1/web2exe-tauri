@@ -31,6 +31,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { locateMingw, readCargoConfig } from './mingw-locate.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -56,44 +57,26 @@ if (fs.existsSync(cargoBin)) {
 
 let mingwBin = null;
 
-if (fs.existsSync(CARGO_CONFIG)) {
-  const toml = fs.readFileSync(CARGO_CONFIG, 'utf8');
-  // linker = "C:\\Users\\xxx\\msys64\\mingw64\\bin\\gcc.exe"
-  const m = toml.match(/^\s*linker\s*=\s*"([^"]+)"/m);
-  if (m) {
-    // TOML 里反斜杠是转义的，还原成真实路径
-    const linker = m[1].replace(/\\\\/g, '\\');
-    const candidate = path.dirname(linker);
-    if (fs.existsSync(path.join(candidate, 'windres.exe'))) {
-      mingwBin = candidate;
-    } else {
-      note(`[提示] 配置里的 linker 目录没有 windres.exe：${candidate}`);
-    }
+// 优先用 cargo 真正会用的那份配置（setup-gnu.mjs 写的），保证与构建行为一致
+const cfg = readCargoConfig(CARGO_CONFIG);
+if (cfg?.linker) {
+  const candidate = path.dirname(cfg.linker);
+  if (fs.existsSync(path.join(candidate, 'windres.exe'))) {
+    mingwBin = candidate;
+  } else {
+    note(`[提示] 配置里的 linker 目录没有 windres.exe：${candidate}`);
   }
+} else if (fs.existsSync(CARGO_CONFIG)) {
+  note(`[提示] 没能从 ${CARGO_CONFIG} 读出 [target.x86_64-pc-windows-gnu] 的 linker。`);
 }
 
 if (!mingwBin) {
-  // 回退：探测常见位置（与 setup-gnu.mjs 保持一致）
-  const VARIANTS = ['mingw64', 'ucrt64', 'clang64'];
-  const ROOTS = [
-    path.join(os.homedir(), 'msys64'),
-    path.join(os.homedir(), 'msys2'),
-    'C:/msys64',
-    'C:/msys2',
-    'D:/msys64',
-    'D:/msys2',
-    'C:/tools/msys64',
-  ];
-  outer: for (const root of ROOTS) {
-    for (const variant of VARIANTS) {
-      const bin = path.join(root, variant, 'bin');
-      if (fs.existsSync(path.join(bin, 'windres.exe')) && fs.existsSync(path.join(bin, 'gcc.exe'))) {
-        mingwBin = bin;
-        break outer;
-      }
-    }
+  // 回退：共用 mingw-locate 的候选清单（与 env-check / setup-gnu 同一份）
+  const found = locateMingw();
+  if (found) {
+    mingwBin = found.bin;
+    note(`[提示] 未读到可用的 cargo 配置，探测到 MinGW：${mingwBin}`);
   }
-  if (mingwBin) note(`[提示] 未读到 cargo 配置，探测到 MinGW：${mingwBin}`);
 }
 
 if (mingwBin) {

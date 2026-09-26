@@ -1,7 +1,7 @@
 // 构建环境自检：一次跑完，明确告诉用户「缺什么、装什么、走哪条路」。
 //
 // 设计原则：
-//   - 只读，不安装、不修改任何系统状态
+//   - 不安装、不改系统状态（只在本目录写一份「环境自检报告.txt」）
 //   - 每条检测项给出可执行的下一步，而不是只报错
 //   - 能区分 MSVC 与 GNU 两条路线的就绪度，分别给出结论
 
@@ -10,6 +10,7 @@ import path from "node:path";
 import os from "node:os";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { locateMingw, REQUIRED_TOOLS } from "./mingw-locate.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -41,9 +42,6 @@ const section = (title) => {
   say(`${C.dim}${"-".repeat(Math.max(40, title.length + 8))}${C.reset}`);
 };
 
-let missingHard = 0;
-let missingSoft = 0;
-
 const check = (label, ok, detail, hint) => {
   const mark = ok ? `${C.green}OK  ${C.reset}` : `${C.red}缺失${C.reset}`;
   say(`  [${mark}] ${label}${detail ? `  ${C.dim}${detail}${C.reset}` : ""}`);
@@ -53,7 +51,10 @@ const check = (label, ok, detail, hint) => {
   return ok;
 };
 
-// 探测命令是否存在且可执行，返回版本字符串或 null
+// 探测命令是否存在且可执行，返回版本字符串或 null。
+//
+// 非零退出也可能带着有效输出：`cl /?`、`link /?` 打完横幅就返回非零，
+// 直接把这类输出丢掉会把「装了」误报成「没装」。
 function probe(cmd, args = ["--version"]) {
   try {
     const out = execFileSync(cmd, args, {
@@ -61,11 +62,15 @@ function probe(cmd, args = ["--version"]) {
       timeout: 8000,
       windowsHide: true,
     });
-    return out.toString().trim().split(/\r?\n/)[0];
-  } catch {
+    return firstLine(out);
+  } catch (e) {
+    const partial = e?.stdout;
+    if (partial && partial.length) return firstLine(partial);
     return null;
   }
 }
+
+const firstLine = (buf) => buf.toString().trim().split(/\r?\n/)[0] || null;
 
 // 依次尝试多个候选路径，返回第一个能跑通的。
 // Rust 通常装在 %USERPROFILE%\.cargo\bin、MinGW 装在 %USERPROFILE%\msys64，
@@ -79,31 +84,6 @@ function probeFirst(candidates, args = ["--version"]) {
   return null;
 }
 
-function dirSize(dir) {
-  let total = 0;
-  const walk = (p) => {
-    let entries;
-    try {
-      entries = fs.readdirSync(p, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const e of entries) {
-      const fp = path.join(p, e.name);
-      try {
-        if (e.isDirectory()) walk(fp);
-        else total += fs.statSync(fp).size;
-      } catch {
-        /* 权限或符号链接问题，跳过 */
-      }
-    }
-  };
-  walk(dir);
-  return total;
-}
-
-const mb = (bytes) => `${(bytes / 1024 / 1024).toFixed(0)} MB`;
-
 // ---------------------------------------------------------------------------
 // 1. 前端侧
 // ---------------------------------------------------------------------------
@@ -111,13 +91,11 @@ const mb = (bytes) => `${(bytes / 1024 / 1024).toFixed(0)} MB`;
 section("1. 前端与 Node 环境");
 
 const nodeVer = process.version;
-check("Node.js", true, nodeVer);
-
 const nodeMajor = Number(nodeVer.replace(/^v/, "").split(".")[0]);
 check(
   "Node 版本 >= 20",
   nodeMajor >= 20,
-  nodeMajor >= 20 ? "" : `当前 ${nodeVer}`,
+  `当前 ${nodeVer}`,
   "升级 Node 到 20 或更高版本",
 );
 
@@ -194,7 +172,8 @@ for (const [rel, desc] of files) {
       `    ${C.yellow}-> node node_modules/@tauri-apps/cli/tauri.js signer generate -w .tauri-key${C.reset}`,
     );
     say(
-      `       ${C.dim}会询问密码，直接回车用空密码；公钥内容粘进 tauri.conf.json 的 plugins.updater.pubkey${C.reset}`,
+      `       ${C.dim}会询问密码；要加密保存就先设 WEB2EXE_UPDATER_PASSWORD（直接回车=空密码，私钥等同明文）${C.reset}`,
+      `       ${C.dim}公钥内容粘进 tauri.conf.json 的 plugins.updater.pubkey${C.reset}`,
     );
   }
 }
@@ -221,6 +200,10 @@ check(
 );
 
 let wv2Declared = false;
+let ident = "";
+let productName = "";
+let pubkey = "";
+let endpoints = [];
 try {
   const conf = JSON.parse(
     fs.readFileSync(path.join(ROOT, "src-tauri", "tauri.conf.json"), "utf8"),
@@ -230,6 +213,10 @@ try {
   wv2Declared = flat.some((r) =>
     String(r).replace(/\\/g, "/").endsWith("WebView2Loader.dll"),
   );
+  ident = String(conf?.identifier ?? "");
+  productName = String(conf?.productName ?? "");
+  pubkey = String(conf?.plugins?.updater?.pubkey ?? "");
+  endpoints = (conf?.plugins?.updater?.endpoints ?? []).map(String);
 } catch {
   /* 配置文件本身的问题在上一节已经报过了 */
 }
@@ -239,6 +226,50 @@ check(
   "",
   '在 tauri.conf.json 的 bundle.resources 里加上 "WebView2Loader.dll"，否则不会被打进安装包',
 );
+
+const IDENT_PLACEHOLDER = !ident || /^com\.example\./i.test(ident);
+const PUBKEY_PLACEHOLDER = !pubkey || pubkey === "REPLACE_WITH_YOUR_TAURI_PUBKEY";
+const ENDPOINT_PLACEHOLDER =
+  endpoints.length === 0 || endpoints.some((u) => /your-host|example\.com/i.test(u));
+// endpoints 指向真实地址 = 这次是要发给别人用的，占位值就该在此刻拦下来
+const willPublish = !ENDPOINT_PLACEHOLDER;
+
+/*
+ * identifier 撞车的真实后果 —— 依据本机生成的 installer.nsi：
+ *   !define BUNDLEID "<identifier>" 只被用在卸载段
+ *   （RmDir /r "$APPDATA\${BUNDLEID}" 与 "$LOCALAPPDATA\${BUNDLEID}"），
+ *   而安装目录与卸载注册表键用的是 PRODUCTNAME。
+ * 也就是说 identifier 决定的是**数据目录归属**（app data、WebView2 的
+ * user-data/EBWebView、single-instance / deep-link / 通知 APPID），跟"更新通道"无关 ——
+ * 更新通道由 endpoints + pubkey 决定。
+ * 实测两点（2026-09-26，见 docs/05 最后一节）：
+ *   - 应用一跑起来就创建 $LOCALAPPDATA\<identifier>\EBWebView（本次 8 MB）；
+ *   - 那两行 RmDir 被 `${If} $DeleteAppDataCheckboxState = 1` 卡着，状态取自
+ *     卸载界面的"删除应用数据"勾选框，**静默卸载 (/S) 不删数据**。
+ * 所以事故形态是：两款应用共用一个 identifier 时读写同一份数据
+ * （cookie / localStorage / 插件状态互相污染），而任一款在**交互式卸载勾选
+ * 删数据**时，会把另一款的数据整目录删掉。
+ */
+const reminders = [];
+if (IDENT_PLACEHOLDER) {
+  reminders.push(
+    `identifier 仍是占位值（${ident || "空"}）—— 共用它的应用会读写同一份 $LOCALAPPDATA\\<identifier>（含 WebView2 的 cookie/localStorage），交互式卸载勾选"删除应用数据"时还会连带删掉对方的数据`,
+  );
+}
+if (PUBKEY_PLACEHOLDER) {
+  reminders.push("updater 公钥仍是占位符 —— 首次打包会自动填，手动改坏过就要自己补");
+}
+if (ENDPOINT_PLACEHOLDER) {
+  reminders.push(
+    `updater endpoints 还是占位地址（${endpoints.join(", ") || "空"}）—— 应用检查更新会一直失败`,
+  );
+}
+if (/[^\x00-\x7F]/.test(productName)) {
+  reminders.push(
+    `productName 含非 ASCII（${productName}）—— 安装包文件名会带中文，建议改 ASCII、界面中文放窗口 title`,
+  );
+}
+for (const r of reminders) say(`  ${C.yellow}提醒${C.reset} ${r}`);
 
 // .bat 必须是 **纯 ASCII + CRLF + 无 BOM**。
 //
@@ -331,8 +362,6 @@ if (defaultToolchain) {
   say(`  ${C.dim}默认工具链：${defaultToolchain}${C.reset}`);
 }
 
-if (!hasRust) missingHard++;
-
 // ---------------------------------------------------------------------------
 // 4. MSVC 工具链（路线 A 需要）
 // ---------------------------------------------------------------------------
@@ -362,7 +391,6 @@ check("cl.exe (编译器)", Boolean(clPath), clPath ? clPath.slice(0, 60) : "", 
 check("link.exe (链接器)", Boolean(linkPath), linkPath ? linkPath.slice(0, 60) : "", "随 MSVC 生成工具一起安装");
 
 const msvcReady = vsFound && Boolean(linkPath);
-if (!msvcReady) missingHard++;
 
 // ---------------------------------------------------------------------------
 // 5. GNU 工具链（路线 B 需要）
@@ -370,34 +398,26 @@ if (!msvcReady) missingHard++;
 
 section("5. 路线 B 依赖：MinGW-w64 (MSYS2)");
 
-// 常见安装位置 + 用户目录（免安装解压版默认落在 ~/msys64）+ PATH，全都试一遍
-const gccCandidates = [
-  path.join(HOME, "msys64", "mingw64", "bin", "gcc.exe"),
-  path.join(HOME, "msys64", "ucrt64", "bin", "gcc.exe"),
-  "C:/msys64/mingw64/bin/gcc.exe",
-  "C:/msys64/ucrt64/bin/gcc.exe",
-  "C:/msys2/mingw64/bin/gcc.exe",
-];
-let gccPath = null;
-for (const c of gccCandidates) {
-  if (fs.existsSync(c)) {
-    gccPath = c;
-    break;
-  }
-}
-if (!gccPath) {
-  const which = probe("gcc");
-  if (which) gccPath = which;
-}
+// 候选位置与必需组件清单由 mingw-locate.mjs 提供 —— 与 setup-gnu.mjs、
+// toolchain-path.mjs 同一份。以前这里另写了一份 5 条的候选列表，并且把
+// probe() 返回的**版本字符串**当成路径用（path.dirname 得到 "."，于是组件全判缺失），
+// 结果装在同一台机器上能过、装在 D 盘或 clang64 上就说你缺 MinGW。
+const mingw = locateMingw();
+const mingwBin = mingw?.bin ?? null;
+const gccVer = mingw ? probe(mingw.gcc) : null;
 
-const gccVer = gccPath ? probe(gccPath) : null;
-check("gcc.exe (MinGW-w64)", Boolean(gccPath), gccVer ?? "", "通过 MSYS2 安装 mingw-w64-x86_64-gcc");
+check(
+  "gcc.exe (MinGW-w64)",
+  Boolean(mingw),
+  gccVer ?? "",
+  "通过 MSYS2 安装 mingw-w64-x86_64-gcc（免管理员装法见 docs/02）",
+);
 
-// ld / windres / dlltool 是否齐全 —— 这三个缺一个就会在链接阶段失败
-const mingwBin = gccPath ? path.dirname(gccPath) : null;
-const needed = ["gcc.exe", "ar.exe", "windres.exe", "dlltool.exe", "nm.exe"];
-let mingwComplete = true;
+// windres / dlltool 缺一个就会在最后一步链接失败
+const needed = [...REQUIRED_TOOLS, "nm.exe"];
+let mingwComplete = Boolean(mingw);
 if (mingwBin) {
+  say(`        ${C.dim}位置：${mingwBin}${C.reset}`);
   for (const n of needed) {
     const ok = fs.existsSync(path.join(mingwBin, n));
     if (!ok) mingwComplete = false;
@@ -410,10 +430,10 @@ if (mingwBin) {
   mingwComplete = false;
 }
 
-// LLD：**可选**。
-// 实测 GNU ld 2.47 已原生支持 -Wl,-exclude-all-symbols，
-// 「符号溢出」(export ordinal too large) 靠 .cargo/config.toml 的 rustflags 就能绕过，
-// 不必再装约 1 GB 的 LLVM。这里只作信息展示，不计入缺失项。
+// LLD：**可选**，这里只作信息展示，不计入缺失项。
+// 实测（binutils 2.47 + Rust 1.98，2026-09-26）：本模板这类 bin 型应用链接出的
+// exe 没有导出表，去掉 -exclude-all-symbols 也照样链接成功；这个参数是给
+// cdylib/DLL 形态或更老工具链的保险。无论哪种情况都不需要额外装约 1 GB 的 LLVM。
 const lldCandidates = [
   ...(mingwBin ? [path.join(mingwBin, "ld.lld.exe")] : []),
   "ld.lld",
@@ -421,20 +441,21 @@ const lldCandidates = [
 const lldPath = probeFirst(lldCandidates)?.cmd ?? null;
 say(
   `  [${lldPath ? `${C.green}有  ${C.reset}` : `${C.dim}无  ${C.reset}`}] ` +
-    `ld.lld (LLD 链接器)  ${C.dim}${lldPath ?? "可选 —— GNU ld 已能绕过符号溢出，无需安装"}${C.reset}`,
+    `ld.lld (LLD 链接器)  ${C.dim}${lldPath ?? "可选 —— 链接不需要它"}${C.reset}`,
 );
 
 // Windows GNU target
-let gnuTargetInstalled = toolchains.some((t) => t.includes("windows-gnu"));
+const gnuTargetInstalled = toolchains.some((t) => t.includes("windows-gnu"));
 check(
   "x86_64-pc-windows-gnu 目标",
   gnuTargetInstalled,
-  gnuTargetInstalled ? "" : "",
+  "",
   "rustup target add x86_64-pc-windows-gnu",
 );
 
-const gnuReady = Boolean(gccPath && mingwComplete && hasRust);
-if (!gnuReady && !msvcReady) missingSoft++;
+// GNU 目标没装的话，setup-gnu 写的 config 会把 target 钉成 x86_64-pc-windows-gnu，
+// 构建直接失败 —— 所以它算就绪度的一部分，不是可选项。
+const gnuReady = Boolean(mingwComplete && hasRust && gnuTargetInstalled);
 
 // ---------------------------------------------------------------------------
 // 6. 打包器依赖
@@ -464,11 +485,13 @@ for (const k of wvKeys) {
     break;
   }
 }
+// 没有它应用起不来。Win11 内置，Win10 靠系统更新推送，LTSC/离线机器可能没有；
+// 但开发机上缺了不影响打包（安装包默认会联网补装），所以只提示、不阻断。
 check(
   "WebView2 Runtime",
   webviewOk,
   webviewOk ? "已安装" : "",
-  webviewOk ? undefined : "Windows 10 1803+ 通常自带；否则装 Evergreen Bootstrapper",
+  webviewOk ? undefined : "本机没有也无妨：NSIS 安装包的 webviewInstallMode 会补装",
 );
 
 // ---------------------------------------------------------------------------
@@ -485,6 +508,9 @@ if (msvcReady) {
 
 if (gnuReady) {
   say(`  ${C.green}路线 B（GNU）已就绪${C.reset} —— 可用 MinGW 打包，无需 C++ 生成工具`);
+} else if (hasRust && mingwComplete && !gnuTargetInstalled) {
+  say(`  ${C.yellow}路线 B（GNU）差最后一步${C.reset} —— MinGW 齐了，但没装 GNU 目标：`);
+  say(`           ${C.bold}rustup target add x86_64-pc-windows-gnu${C.reset}`);
 } else if (hasRust) {
   say(`  ${C.yellow}路线 B（GNU）差 MinGW${C.reset} —— Rust 已装，需补 MSYS2 的 gcc`);
 } else {
@@ -501,27 +527,31 @@ if (msvcReady || gnuReady) {
 } else {
   say(`  ${C.yellow}尚不能打包。${C.reset}推荐按路线 B 补齐环境（比 A 省约 2-4 GB 下载）：`);
   say("");
-  say(`  ${C.bold}步骤 1${C.reset}  安装 MSYS2（约 100 MB）`);
-  say("     下载：https://mirrors.tuna.tsinghua.edu.cn/msys2/distrib/x86_64/");
-  say("     选 msys2-x86_64-<最新日期>.exe");
+  say(`  ${C.bold}步骤 1${C.reset}  装 MSYS2 + MinGW（约 100-700 MB）`);
+  say("     免管理员（解压到用户目录，全程不提权）：");
+  say("       set WEB2EXE_ALLOW_UNVERIFIED_TOOLCHAIN=1");
+  say("       npm run setup:msys2");
+  say("       npm run setup:mingw");
+  say("     注意：这条路绕开了 pacman 的包签名校验，风险与理由见 docs/02。");
+  say("     能接受管理员权限时更推荐官方安装程序 + pacman（它验包签名）：");
+  say("       https://mirrors.tuna.tsinghua.edu.cn/msys2/distrib/x86_64/");
+  say("       装完在 MSYS2 MINGW64 终端里：pacman -S mingw-w64-x86_64-gcc");
   say("");
-  say(`  ${C.bold}步骤 2${C.reset}  在 MSYS2 终端里装编译器与 LLD`);
-  say("     pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-lld");
+  say(`  ${C.bold}步骤 2${C.reset}  安装 Rust（走清华镜像，避免源站超时）`);
+  say("     最省事：双击「安装Rust环境.bat」并选 GNU —— 它会先按官方 .sha256");
+  say("     校验 rustup-init.exe 再执行。");
+  say("     想自己跑：rustup-init.exe 时选 x86_64-pc-windows-gnu（默认是 MSVC）。");
   say("");
-  say(`  ${C.bold}步骤 3${C.reset}  安装 Rust（走清华镜像，避免源站超时）`);
-  say("     PowerShell 里执行：");
-  say(`       $env:RUSTUP_DIST_SERVER="https://mirrors.tuna.tsinghua.edu.cn/rustup"`);
-  say("       # 然后运行 rustup-init.exe");
-  say("");
-  say(`  ${C.bold}步骤 4${C.reset}  加上 GNU 目标`);
+  say(`  ${C.bold}步骤 3${C.reset}  补 GNU 目标并写工具链配置`);
   say("     rustup target add x86_64-pc-windows-gnu");
+  say("     npm run setup:gnu   # 探测 MinGW 路径，生成 src-tauri/.cargo/config.toml");
 }
 
 say("");
-say(`${C.dim}提示：本脚本只做检测，不会安装或修改任何东西。${C.reset}`);
+say(`${C.dim}提示：本脚本不安装、不改系统状态，只在本目录写一份「环境自检报告.txt」。${C.reset}`);
 
 // ---------------------------------------------------------------------------
-// 阻断项：任意一条不满足，就一定打不出「装上就能跑」的安装包
+// 阻断项：任意一条不满足，就打不出「装上就能跑、发布不会撞车」的安装包
 // ---------------------------------------------------------------------------
 
 const blockers = [];
@@ -529,7 +559,13 @@ if (!hasNm) blockers.push("前端依赖未安装  ->  npm install");
 if (!hasDist) blockers.push("前端产物 dist/ 缺失  ->  npm run build");
 if (fileMissing > 0) blockers.push(`${fileMissing} 个必需项目文件缺失（见上方第 2 节）`);
 if (!hasRust) blockers.push("Rust 工具链缺失  ->  见「安装Rust环境.bat」");
-if (!msvcReady && !gnuReady) blockers.push("MSVC 与 GNU 两条路线都不可用");
+if (!msvcReady && !gnuReady) {
+  blockers.push(
+    gnuTargetInstalled || !hasRust
+      ? "MSVC 与 GNU 两条路线都不可用  ->  见上方「尚不能打包」的步骤"
+      : "缺 x86_64-pc-windows-gnu 目标  ->  rustup target add x86_64-pc-windows-gnu",
+  );
+}
 if (!wv2DllOk) {
   blockers.push("WebView2Loader.dll 缺失  ->  npm run webview2:sync");
 } else if (!wv2Declared) {
@@ -537,6 +573,15 @@ if (!wv2DllOk) {
 }
 if (badBats.length > 0) {
   blockers.push(`${badBats.length} 个 .bat 换行格式不对  ->  npm run bat:fix`);
+}
+// 这条不是「打不出包」，是「打出来的包会在别人机器上撞车」：
+// endpoints 已经填成真实地址 = 这次是要发布的，占位 identifier 必须在这里拦下。
+// 只想本地试包的话把 endpoints 留成占位地址即可（那时它只是提醒）。
+if (IDENT_PLACEHOLDER && willPublish) {
+  blockers.push(
+    `要发布但 identifier 仍是占位值（${ident || "空"}）  ->  改成自己的反向域名；` +
+      `共用会让多款应用读写同一个数据目录，卸载其中一款（勾选删数据时）会连带删掉别家的`,
+  );
 }
 
 section("阻断项");
