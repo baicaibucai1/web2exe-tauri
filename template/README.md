@@ -42,20 +42,28 @@ npm install
 并**自动把公钥写进** `tauri.conf.json` 的 `plugins.updater.pubkey`。
 
 公私钥必须成对。公钥还是模板占位符的话，打包会在**全部编译完成之后**
-（实测 42 分钟）才报 `failed to decode pubkey` —— 所以这件事必须在编译前查掉。
+（原作者机器上实测 42 分钟，取决于依赖量）才报 `failed to decode pubkey` —— 所以这件事必须在编译前查掉。
 
-想手动做（比如多台机器共享同一对密钥）：
+**默认生成的是空密码私钥，也就是不加密、等同明文。** 请把它当成一把能对所有
+已安装用户下指令的钥匙来对待：
+
+```bash
+# 想让私钥加密：生成与以后每次打包都用同一个值，脚本会自动读、不需要交互输入
+set WEB2EXE_UPDATER_PASSWORD=你的密码
+```
+
+想手动生成（比如多台机器共享同一对密钥）：
 
 ```bash
 node node_modules/@tauri-apps/cli/tauri.js signer generate -w .tauri-key
-# 询问密码时直接回车（用空密码，打包脚本按空密码处理）
 ```
 
 > **暂时不想要自动更新**？把 `tauri.conf.json` 里的
 > `bundle.createUpdaterArtifacts` 改成 `false`，就可以跳过密钥直接打包。
 
-`.tauri-key` 是私钥，**绝不能提交到仓库**（本目录的 `.gitignore` 已经挡住了）。
-它丢了就再也无法给已安装的用户推送更新。
+`.tauri-key` 是私钥，**绝不能提交到仓库**（本目录的 `.gitignore` 已经挡住了），
+并且要单独备份。"私钥丢了"和"私钥被人读到"是两种完全不同的后果，
+详见仓库的 `docs/04` 的「私钥安全」一节。
 
 ## 三个 .bat
 
@@ -86,10 +94,18 @@ node node_modules/@tauri-apps/cli/tauri.js signer generate -w .tauri-key
 node scripts/env-check.mjs        # 1. 环境有什么问题，它会直说
 node scripts/build-status.mjs     # 2. 编译到哪一步了、产物在哪
 node scripts/check-installer.mjs --verbose   # 3. 包里到底装了什么
+node scripts/smoke-test.mjs       # 4. 真装一遍：能不能打开
 ```
 
-打包失败时先看第 1 条；觉得"装完应该有问题"看第 3 条。
-两个脚本都在本路线仓库 `docs/03` 的表格里有对应关系。
+打包失败时先看第 1 条；觉得"装完应该有问题"看第 3、4 条 ——
+第 3 条只保证文件在包里，第 4 条才证明起得来（它会自己卸载干净，
+加 `--keep` 可以留着窗口手点）。
+
+仓库根还有一条文档链接检查（改 `docs/` 里的节号后跑它）：
+
+```bash
+node scripts/doc-lint.mjs         # 或 npm run docs:check
+```
 
 ## 关于 src-tauri/.cargo/config.toml
 
@@ -97,9 +113,20 @@ node scripts/check-installer.mjs --verbose   # 3. 包里到底装了什么
 `打包桌面版.bat` 发现它不存在时会自动跑 `setup-gnu.mjs` 生成，
 所以正常情况下你不用管它。
 
-它的作用是两件事：把编译目标钉死为 `x86_64-pc-windows-gnu`，
-以及加上 `-C link-arg=-Wl,-exclude-all-symbols`（绕开符号导出上限）。
-删掉它不会立刻报错，而是可能先白编译十几分钟 —— 详见 `docs/03` 第 2 步。
+它做三件事，必要程度不一样：
+
+| 内容 | 必需？ | 少了会怎样 |
+|---|---|---|
+| `[build] target = "x86_64-pc-windows-gnu"` | **必需** | cargo 走 rustup 默认 toolchain；若是 msvc，会先白编译十几分钟再报 `could not open 'kernel32.lib'` |
+| `linker` / `ar` 绝对路径 | **必需** | MinGW 不在持久 PATH 里，链接阶段找不到工具 |
+| `-C link-arg=-Wl,-exclude-all-symbols` | 保险 | 实测去掉也编得过 —— 见下 |
+
+那行 `rustflags` 约束的是 PE **导出表**（序号上限 65535），而桌面应用是 `bin`，
+链接出的 exe 没有导出表，所以对本模板是空操作；留着它的成本为零，
+收益是你哪天改成 cdylib 形态（或继承了别人的 `crate-type = ["cdylib", "rlib"]`）
+时不会撞上那个真实存在的错误。完整实测记录见仓库 `docs/05` 第 2 节。
+
+删掉这个文件不会立刻报错，而是可能先白编译十几分钟 —— 详见 `docs/03` 第 2 步。
 
 ## 更详细的说明
 

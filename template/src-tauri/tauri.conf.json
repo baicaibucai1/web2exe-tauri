@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Web2Exe 应用",
+  "productName": "Web2Exe App",
   "version": "0.1.0",
   "identifier": "com.example.web2exe-app",
   "build": {
@@ -38,6 +38,9 @@
       "WebView2Loader.dll"
     ],
     "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
       "nsis": {
         "installMode": "currentUser",
         "languages": ["SimpChinese"]
@@ -47,7 +50,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "REPLACE_WITH_YOUR_TAURI_PUBKEY",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU2MDQ2RDhFNDhBNjhERDIKUldUU2phWklqbTBFNXRGbmxtajBwWjYvNVdZVzRGSThEOGVtYWxQWjFBeHFIbzB6Q0V6YnRFTm0K",
       "endpoints": [
         "https://your-host.example.com/web2exe/update.json"
       ],

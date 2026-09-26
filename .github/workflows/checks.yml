@@ -1,0 +1,93 @@
+name: checks
+
+# 这套路线的坑绝大多数是「平台 / 编码 / 路径」类的，且都有纯 Node 的判据，
+# 所以能有一条不依赖 Rust 工具链的门禁：改坏 .bat 编码、改坏前端类型、
+# 改坏安装包内容校验逻辑，都会在合并前被拦下。
+#
+# 真正跑 tauri build + 安装冒烟的 job 需要装 MinGW-w64（约 1 GB），每次从零开始，
+# 所以挂在 schedule 上而不是每个 PR。
+# 它**不带签名密钥**：CI 里把 createUpdaterArtifacts 关掉，只验"能不能打出包、
+# 装上去能不能用"。签名等于把"给所有已安装用户推程序"的能力交给 CI runner
+# 与 artifact 存储，那是 docs/04「私钥安全」明确不该做的事。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 3 * * 2" # 每周三 03:17 UTC 跑一次完整构建 + 冒烟
+
+jobs:
+  static:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: template
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: template/package-lock.json
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: .bat 必须纯 ASCII + CRLF + 无 BOM（docs/05 第 1 节的门禁）
+        run: node scripts/bat-lint.mjs
+
+      - name: 文档交叉引用不能断链
+        run: node scripts/doc-lint.mjs
+
+      - name: WebView2Loader.dll 与 Cargo.lock 锁定的版本一致
+        run: node scripts/sync-webview2-loader.mjs --check
+
+      - name: 类型检查与前端构建
+        run: npm run build
+
+      - name: 环境自检（缺 Rust/MinGW 是预期，不判定）
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: node scripts/env-check.mjs
+
+  desktop:
+    # 只在定时触发（或手动 workflow_dispatch）时跑：要装 1 GB 工具链
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: template
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: template/package-lock.json
+
+      - name: 装 GNU 目标
+        run: rustup target add x86_64-pc-windows-gnu
+
+      - name: 装 MinGW-w64（走 pacman，它会验包签名）
+        run: |
+          choco install msys2 --params "/NoUpdate" -y
+          C:/tools/msys64/usr/bin/pacman.exe -S --noconfirm mingw-w64-x86_64-gcc
+
+      - name: 写 cargo 工具链配置
+        run: npm run setup:gnu
+
+      - name: 打完整安装包（不签名：CI 不持有更新私钥）
+        env:
+          WEB2EXE_NO_SIGN: "1"
+        run: |
+          npm ci
+          node scripts/pack.mjs
+
+      - name: 校验包内容
+        run: node scripts/check-installer.mjs
+
+      - name: 真装一遍（装 → 启动 → 卸载 → 回收）
+        run: node scripts/smoke-test.mjs
