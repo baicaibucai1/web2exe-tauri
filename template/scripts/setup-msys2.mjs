@@ -3,17 +3,25 @@
 // 为什么用 tar.xz 而不是官方安装程序：
 //   安装程序 (msys2-x86_64-*.exe) 需要管理员权限写入 C:\msys64。
 //   而这个 base 存档解压到用户目录即可，全程不需要提权。
+//
+// 代价：没有 pacman 的包签名校验，所以要求显式授权（见 toolchain-download.mjs）。
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { downloadTo, requireConsent } from "./toolchain-download.mjs";
 
-const TMP = path.join("C:", "AI_Production", "Tools", "main", ".setup-tmp");
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const TMP = path.join(path.resolve(__dirname, ".."), ".setup-tmp");
 const HOME = os.homedir();
 const DEST = HOME; // 解压后会在 home 下产生 msys64/ 目录
 const ARCHIVE = path.join(TMP, "msys2-base.tar.xz");
 const URL = "https://mirrors.tuna.tsinghua.edu.cn/msys2/distrib/msys2-x86_64-latest.tar.xz";
+
+// 先要授权，再动文件系统
+requireConsent("MSYS2 base 存档", "npm run setup:msys2");
 
 fs.mkdirSync(TMP, { recursive: true });
 
@@ -32,22 +40,16 @@ if (!fs.existsSync(ARCHIVE)) {
   console.log("");
   console.log("下载 MSYS2 base (51 MB)...");
   const start = Date.now();
-  const r = spawnSync("curl.exe", ["-L", "--max-time", "600", "-sS", "-o", ARCHIVE, URL], {
-    encoding: "utf8",
-    timeout: 650000,
-    windowsHide: true,
-  });
-  console.log(`status=${r.status} 耗时=${((Date.now() - start) / 1000).toFixed(1)}s`);
-  if (r.stderr) console.log("stderr:", r.stderr.slice(0, 500));
+  if (!downloadTo(URL, ARCHIVE)) {
+    console.error("下载失败，未做任何改动。");
+    process.exit(1);
+  }
+  console.log(`耗时=${((Date.now() - start) / 1000).toFixed(1)}s`);
 } else {
   console.log("");
   console.log("存档已存在，跳过下载");
 }
 
-if (!fs.existsSync(ARCHIVE)) {
-  console.error("下载失败");
-  process.exit(1);
-}
 console.log(`存档大小: ${(fs.statSync(ARCHIVE).size / 1048576).toFixed(1)} MB`);
 
 // 解压
@@ -63,6 +65,11 @@ const ex = spawnSync("tar.exe", ["-xf", ARCHIVE, "-C", DEST], {
 });
 console.log(`status=${ex.status} 耗时=${((Date.now() - start) / 1000).toFixed(1)}s`);
 if (ex.stderr) console.log("stderr:", ex.stderr.slice(0, 1000));
+if (ex.status !== 0) {
+  console.error("解压失败（存档可能不完整），已保留文件供排查：" );
+  console.error(`  ${ARCHIVE}`);
+  process.exit(1);
+}
 
 // 验证
 console.log("");

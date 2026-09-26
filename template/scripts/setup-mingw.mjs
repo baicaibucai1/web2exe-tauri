@@ -4,18 +4,28 @@
 // 而密钥环初始化在这个环境里反复卡住。MSYS2 的包本身只是 tar.zst 归档，
 // 本机 bsdtar 支持 zstd，直接解压即可 —— 不需要 pacman、不需要密钥环。
 //
+// 代价是**包签名校验也没了**，所以下载前必须拿到明确授权
+// （WEB2EXE_ALLOW_UNVERIFIED_TOOLCHAIN=1，见 toolchain-download.mjs）。
+// 能接受 pacman 的人请使用 MSYS2 安装程序路线，见 docs/02。
+//
 // 依赖解析：每个包里的 .PKGINFO 有 depend 字段，用它做广度优先解析。
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { downloadTo, requireConsent } from "./toolchain-download.mjs";
 
-const ROOT = path.join("C:", "AI_Production", "Tools", "main");
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(__dirname, "..");
 const TMP = path.join(ROOT, ".setup-tmp");
 const CACHE = path.join(TMP, "pkg-cache");
 const MSYS = path.join(os.homedir(), "msys64");
 const BASE = "https://mirrors.tuna.tsinghua.edu.cn/msys2/mingw/mingw64/";
+
+// 先要授权，再动文件系统 —— 未授权时不该留下任何目录
+requireConsent("MinGW-w64 工具链归档", "npm run setup:mingw");
 
 fs.mkdirSync(CACHE, { recursive: true });
 
@@ -27,12 +37,10 @@ const INDEX = path.join(TMP, "mingw64-index.html");
 
 if (!fs.existsSync(INDEX) || fs.statSync(INDEX).size < 1000000) {
   console.log("下载包索引...");
-  const r = spawnSync(
-    "curl.exe",
-    ["-L", "--max-time", "300", "-sS", "-o", INDEX, BASE],
-    { encoding: "utf8", timeout: 350000, windowsHide: true },
-  );
-  console.log("status:", r.status);
+  if (!downloadTo(BASE, INDEX)) {
+    console.error("拿不到包索引，无法继续。");
+    process.exit(1);
+  }
 }
 const html = fs.readFileSync(INDEX, "utf8");
 console.log(`索引大小: ${(html.length / 1048576).toFixed(1)} MB`);
@@ -87,17 +95,10 @@ function findPackage(name) {
 
 const download = (file) => {
   const dest = path.join(CACHE, file);
+  // 缓存复用只认「非空」；归档真损坏时后面的 tar 会失败并被 status 检查抓到
   if (fs.existsSync(dest) && fs.statSync(dest).size > 0) return dest;
-  const r = spawnSync("curl.exe", ["-L", "--max-time", "600", "-sS", "-o", dest, BASE + file], {
-    encoding: "utf8",
-    timeout: 650000,
-    windowsHide: true,
-  });
-  if (r.status !== 0 || !fs.existsSync(dest)) {
-    console.log(`  [下载失败] ${file} ${r.stderr?.slice(0, 200) ?? ""}`);
-    return null;
-  }
-  return dest;
+  // 无校验的风险已在开头 requireConsent 里讲过一次，这里逐包不再重复刷屏
+  return downloadTo(BASE + file, dest, { quiet: true }) ? dest : null;
 };
 
 // 从包的 .PKGINFO 读依赖列表

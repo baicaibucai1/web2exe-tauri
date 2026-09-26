@@ -24,6 +24,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { PRODUCT, ROOT } from './project.mjs';
+import { downloadTo, fetchExpectedSha256, sha256File } from './toolchain-download.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -240,7 +241,10 @@ async function cmdInstallRust() {
 
   const target = choice === '1' ? 'x86_64-pc-windows-gnu' : 'x86_64-pc-windows-msvc';
   const official = `https://static.rust-lang.org/rustup/dist/${target}/rustup-init.exe`;
-  const mirror = `https://mirrors.tuna.tsinghua.edu.cn/rustup/dist/${target}/rustup-init.exe`;
+  // 镜像注意：清华源是合格的 RUSTUP_DIST_SERVER（它托管 /rustup/dist/channel-rust-*.toml），
+  // 但**不在 /rustup/dist/<triple>/rustup-init.exe 托管安装程序**（实测 404）。
+  // rsproxy.cn 两个都有，实测 200。别把这两个用途混成同一个 URL 前缀。
+  const mirror = `https://rsproxy.cn/rustup/dist/${target}/rustup-init.exe`;
 
   say('');
   say(`  已选择：${choice === '1' ? 'GNU' : 'MSVC'} 工具链`);
@@ -250,30 +254,47 @@ async function cmdInstallRust() {
   fs.mkdirSync(TMP, { recursive: true });
   const exe = path.join(TMP, 'rustup-init.exe');
 
+  // 校验和一律取自官方源。二进制可以先从镜像取 —— 跨主机的摘要比对才有意义，
+  // 镜像和二进制一起被污染时，官方 .sha256 仍然对不上。
+  say('');
+  say('  正在获取官方校验和...');
+  const wantSha = fetchExpectedSha256(official + '.sha256');
+  if (!wantSha) {
+    die([
+      '拿不到 rustup-init.exe 的官方校验和，因此不下载、不执行。',
+      '',
+      '接下来会执行的是别人提供的二进制，没有校验依据时不能自动装。',
+      '恢复网络（或换源）后重跑本脚本；也可以自己下载并核对：',
+      `  ${official}`,
+      `  ${official}.sha256`,
+      '文件名必须保持 rustup-init.exe，放到 ' + TMP,
+    ]);
+  }
+  say(`  期望 SHA-256  ${wantSha.slice(0, 16)}…`);
+
+  if (fs.existsSync(exe)) {
+    if (sha256File(exe) !== wantSha) {
+      say('  已有的 rustup-init.exe 校验和不符，删除后重新下载。');
+      fs.rmSync(exe, { force: true });
+    } else {
+      say('  已存在的 rustup-init.exe 校验通过，直接复用。');
+    }
+  }
+
   if (!fs.existsSync(exe)) {
     say('');
     say('  正在下载安装程序...');
     say('');
     for (const [label, url] of [
-      ['清华镜像', mirror],
+      ['rsproxy 镜像', mirror],
       ['官方源', official],
     ]) {
       say(`  尝试 ${label}...`);
-      try {
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const buf = Buffer.from(await res.arrayBuffer());
-        if (buf.length < 100000) throw new Error(`文件太小（${buf.length} 字节），可能不是安装程序`);
-        fs.writeFileSync(exe, buf);
-        say(`  下载完成（${(buf.length / 1024 / 1024).toFixed(1)} MB）。`);
-        break;
-      } catch (e) {
-        say(`  失败：${e.message}`);
-      }
+      if (downloadTo(url, exe, { expectSha256: wantSha })) break;
     }
     if (!fs.existsSync(exe)) {
       die([
-        '下载失败',
+        '下载失败，或下载内容的校验和与官方公告不符。',
         '',
         '请手动下载后放到本目录下的 .setup-tmp\\ 里，再运行一次本脚本：',
         `  ${official}`,
@@ -370,8 +391,19 @@ async function cmdGuideMingw() {
   say('    MSYS2 自带的 MinGW-w64 提供这个链接器，体积约 100 MB，');
   say('    比 Visual Studio 生成工具的 2-4 GB 小得多。');
   say('');
-  say('  注意：这个环节需要你手动操作，脚本无法代劳 ——');
-  say('        MSYS2 安装程序要写入系统目录并请求管理员权限。');
+  say('  两种装法，先选一个：');
+  say('');
+  say('    A. 官方安装程序 + pacman（本指引下面的步骤）');
+  say('       要管理员权限（写系统目录），但 pacman 会验包签名 —— 更可信。');
+  say('    B. 免管理员，脚本自动装：');
+  say('       set WEB2EXE_ALLOW_UNVERIFIED_TOOLCHAIN=1');
+  say('       npm run setup:msys2');
+  say('       npm run setup:mingw');
+  say('       解压在用户目录、全程不提权，代价是**下载内容不做完整性校验**');
+  say('       （绕开了 pacman 的签名校验）。风险与取舍见仓库 docs/02。');
+  say('');
+  say('  下面写的是 A。这一步需要你手动操作，脚本无法代劳 ——');
+  say('  MSYS2 安装程序要写入系统目录并请求管理员权限。');
   say('');
   say('  ----------------------------------------------------');
   say('  第 1 步：下载 MSYS2');
