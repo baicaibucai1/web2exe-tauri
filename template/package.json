@@ -3,6 +3,9 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -14,12 +17,15 @@
     "webview2:check": "node scripts/sync-webview2-loader.mjs --check",
     "bat:check": "node scripts/bat-lint.mjs",
     "bat:fix": "node scripts/bat-lint.mjs --fix",
+    "docs:check": "node scripts/doc-lint.mjs",
+    "smoke": "node scripts/smoke-test.mjs",
     "env:check": "node scripts/env-check.mjs",
     "setup:gnu": "node scripts/setup-gnu.mjs",
     "setup:rust": "node scripts/setup-rust.mjs",
     "setup:msys2": "node scripts/setup-msys2.mjs",
     "setup:mingw": "node scripts/setup-mingw.mjs",
     "build:desktop": "node scripts/build-desktop.mjs",
+    "pack": "node scripts/pack.mjs",
     "build:status": "node scripts/build-status.mjs",
     "installer:check": "node scripts/check-installer.mjs"
   },
