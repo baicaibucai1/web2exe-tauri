@@ -188,6 +188,17 @@ template/
 
 ---
 
+## 仓库治理文档
+
+| 文件 | 内容 |
+|---|---|
+| [SECURITY.md](SECURITY.md) | 报告方式；更新私钥的单点风险与泄露处置；工具链下载的供应链边界（哪些装法**不做**完整性校验、为什么要显式授权）；CI 为什么不放密钥 |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 改完必须跑的门禁（含 `npm run smoke` 真实装卸验证）、`.bat` 与脚本约定、四个环境变量的含义、提交信息风格 |
+| [VERSIONS.md](VERSIONS.md) | 所有"实测"结论绑定的版本指纹、复现命令、以及哪几条是环境相关的 |
+| [LICENSE](LICENSE) | MIT |
+
+---
+
 ## 许可
 
 MIT。模板里的 `WebView2Loader.dll` 是微软的运行时文件，随 Microsoft 许可分发。
