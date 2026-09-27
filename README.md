@@ -1,5 +1,7 @@
 # web2exe-tauri
 
+> English: [README.en.md](README.en.md)
+
 把**已有的 Web 应用**（静态站、Vite / React / Vue 的构建产物、单页 HTML）打包成
 Windows 桌面应用与安装包的完整路线，附带可直接复制的模板。
 
